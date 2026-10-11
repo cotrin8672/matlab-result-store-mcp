@@ -8,7 +8,43 @@ MATLAB Result Storeに保存された結果を検索し、図を見ながらAI�
 
 MCPサーバーはSQLiteとv7.3 MATを直接読み、MATLABを起動しない。既存Plotを変換するときだけ、利用中のMATLABセッションでfig2plotlyを使う。描画関数の数式や正規化は変更しない。
 
-## セットアップ
+## Codex Appへ導入する
+
+Node.js 24以上が必要。依存関係は利用可能なpnpm、なければnpm経由で準備する。
+Codexが提供するNode.js・pnpmも利用できる。pnpmの手動インストールや、閲覧用のMATLAB起動は不要。
+
+1. Pluginsの「Add a marketplace」を開く。
+2. Sourceに`https://github.com/cotrin8672/matlab-result-store-mcp`を入力して追加する。
+   Git refとSparse pathsは空欄でよい。
+3. Marketplaceの「MATLAB Result Store」をインストールする。
+4. Pluginのセットアップを実行し、`results/store.sqlite`がある保存フォルダを指定する。
+   「MATLAB Result Storeをセットアップして。保存先は○○」と依頼してもよい。
+5. 新しいチャットでPluginを選び、「保存結果を開いて」と依頼する。
+
+`.agents/plugins/marketplace.json`でこのリポジトリ自体をPluginとして公開している。
+アプリから追加したMarketplaceは個人用設定で利用できる。アプリのURL入力に相当するCLI操作:
+
+```powershell
+codex plugin marketplace add https://github.com/cotrin8672/matlab-result-store-mcp
+codex plugin add matlab-result-store@matlab-result-store
+```
+
+セットアップ用Skillは、実際にインストールされたコピーで依存関係を導入し、UIをビルドする。
+MCPの初回起動でも同じ準備を行うため、初回だけパッケージ取得にネットワークを使う。
+準備済みなら次の起動ではインストールとビルドを省略する。保存先が未設定でもMCPは接続でき、
+結果を読むときにセットアップを案内する。初回の準備に備え、MCPの起動待ち時間は120秒にしている。
+
+保存先は通常`~/.codex/matlab-result-store/store.local.json`に保持する。
+`CODEX_HOME`があればその配下、`PLUGIN_DATA`があればそのディレクトリを使う。
+MCPにだけ`PLUGIN_DATA`が渡されても、その中に設定がなければ通常の個人用設定を読む。
+Pluginのキャッシュを更新しても設定は残る。保存フォルダを変える場合もセットアップを使う。
+個人用の設定は最後に指定した1フォルダで、新しいチャットから反映される。
+
+対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。
+保存フレームワークや実験データはこのリポジトリに含まれない。図の表示は、後述のPlot出力を
+済ませたものが対象。MCP Apps UIの表示はホストの対応に依存する。
+
+## 開発用セットアップ
 
 Node.js 24以上とpnpmが必要。
 
@@ -111,7 +147,7 @@ node server.ts "path/to/project"
   "mcpServers": {
     "result-store": {
       "command": "node",
-      "args": ["path/to/matlab-result-store-mcp/server.ts", "path/to/project"]
+      "args": ["path/to/matlab-result-store-mcp/start.mjs", "path/to/project"]
     }
   }
 }
@@ -121,19 +157,34 @@ HTTPでのローカル接続は`node server.ts "path/to/project" --http 8732`。
 
 ## Plugin Extensionとして使う
 
-ルートの`plugin.json`と`mcp.json`、`skills/`が一つのPluginパッケージになる。`list_schemes`にサイドバーと会話パネルのentrypointを宣言し、`ui://result-store/browser.html`をMCP Apps UIとして提供する。
+`.codex-plugin/plugin.json`とルートの`.mcp.json`、`skills/`が一つのPluginパッケージになる。
+CodexのMCP起動待ち時間を同梱するため、[公式に対応しているCodex形式](https://developers.openai.com/plugins/build/plugins)を使う。
+`list_schemes`にサイドバーと会話パネルのentrypointを宣言し、`ui://result-store/browser.html`を
+MCP Apps UIとして提供する。
 
-Plugin起動時の保存先は、環境変数`RESULT_STORE_ROOT`、またはPluginルートの`store.local.json`で指定する。
+保存先はセットアップ用Skillが設定する。手動で設定する場合は、インストール先で次を実行する。
+
+```powershell
+node setup.mjs "path/to/project"
+```
+
+起動引数、環境変数`RESULT_STORE_ROOT`、個人用設定の順に優先する。開発用にはPluginルートの
+`store.local.json`も引き続き使える。個人用設定がない場合に読み込む。
 
 ```json
 { "root": "path/to/project" }
 ```
 
-ホストが`PLUGIN_DATA`を渡す場合は、そのディレクトリの`store.local.json`を読む。設定・依存パッケージ・UIビルドは実際にホストが使うインストール先に用意する。ローカルPluginをキャッシュへコピーするホストでは、元のチェックアウトを更新しただけでは反映されない。
+`start.mjs`がインストール先の依存関係とUIを準備してからMCPを起動する。
+ローカルPluginをキャッシュへコピーするホストでは、元のチェックアウトを更新しただけでは
+反映されない。Marketplaceの更新・Pluginの再インストールを使う。
 
 ChatGPT側では、選択した結果のメタデータとPNGを`ui/update-model-context`で渡し、質問ボタンは`openai/message`の`send: false`で会話の下書きを作る。[公式のExtension仕様](https://developers.openai.com/plugins/build/extensions)に沿った実装。
 
-このリポジトリの作成だけではChatGPTへの登録・インストールは完了しない。接続は[公式の接続手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)に従い、ローカル／repo marketplace、または登録済みMCP接続とSkillの組み合わせを使う。リモートからの開発接続にはSecure MCP Tunnelなどが必要。このHTTPサーバーはloopback限定で、公開サーバー向けの認証は含まない。
+Codex Appへのローカル導入は上記のMarketplaceを使う。ChatGPT側でリモートMCP接続を作る場合は
+[公式の接続手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)に従う。
+リモートからの開発接続にはSecure MCP Tunnelなどが必要。このHTTPサーバーはloopback限定で、
+公開サーバー向けの認証は含まない。
 
 ## 現時点の範囲
 
@@ -150,5 +201,10 @@ pnpm build
 ```
 
 実データではPhCRの`waveform`を使用し、MAT読み出しの1024複素要素とMATLABの値の一致、元のFigureと変換後の4系列・軸範囲の一致、HTML/JSON/UI resource、画面での選択・ズーム・質問の引き渡しを確認した。クエリは`scan_waveform`の実データでMATLABの`store.browse`と件数・行順・候補・配列の一致・除外・最近傍位置を比較した。ChatGPT本体への接続確認は別途必要。
+
+導入は独立した個人設定でCodex CLIからMarketplace追加・Pluginインストールを行い、
+Codex app-serverによるセットアップSkill・5ツールの認識と、保存済みPlotの取得を確認した。
+依存関係のないインストール先からの初回起動、保存先の設定前後、設定の引き継ぎ、
+PNGとUI resourceも確認した。Codex Appの画面操作とUIの描画は別途確認が必要。
 
 参考: [Pluginパッケージ仕様](https://developers.openai.com/plugins/build/plugins)、[MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)、[Plotly MATLAB](https://github.com/plotly/plotly_matlab)。

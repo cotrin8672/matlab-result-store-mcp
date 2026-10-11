@@ -1,0 +1,3 @@
+interface:
+  display_name: "MATLAB Result Storeのセットアップ"
+  short_description: "インストール済みPluginの依存関係を準備し保存フォルダを設定する"

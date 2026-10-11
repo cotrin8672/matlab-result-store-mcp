@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "result-store": {
+      "command": "node",
+      "args": ["start.mjs"],
+      "cwd": "./",
+      "startup_timeout_sec": 120
+    }
+  }
+}
