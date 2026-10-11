@@ -296,7 +296,7 @@ export class ResultStore {
     try {
       manifest = JSON.parse(readFileSync(this.file(`${folder}/manifest.json`), 'utf8'));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Plot is not exported. In an existing MATLAB session run resultstore.exportPlot("${id}", uint64(${rowId}), ${plotIndex}, root).`);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No live MATLAB connection or saved Plot. In the existing MATLAB session run resultstore.connect(root). An offline export can also be created with resultstore.exportPlot("${id}", uint64(${rowId}), ${plotIndex}, root).`);
       throw error;
     }
     const catalog = this.catalog();

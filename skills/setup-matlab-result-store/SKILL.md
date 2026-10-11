@@ -23,6 +23,11 @@ description: Set up the installed MATLAB Result Store plugin, prepare its depend
 5. 出力された保存先・Schemeと件数を確認し、完了を伝える。MCPツールが利用できる場合は
    `list_schemes`でも同じ保存先を確認する。まだツールが読み込まれていない場合や保存先を
    切り替えた場合は、新しいチャットでPluginを使うよう案内する。
+6. ライブ描画には、既存MATLABセッションでフレームワークの`common`、保存先プロジェクト、
+   インストールされたPluginの`matlab`フォルダをパスに追加し、
+   `resultStoreConnection = resultstore.connect(root)`を一度実行する。
+   既存セッションを操作できる手段があれば使い、なければこのコマンドを案内する。
+   結果ごとのExportは不要。接続終了は`stop(resultStoreConnection); delete(resultStoreConnection);`。
 
 設定は通常`~/.codex/matlab-result-store/store.local.json`へ保存する。`CODEX_HOME`があれば
 その配下、ホストが`PLUGIN_DATA`を渡す場合はそのディレクトリを使う。MCP起動時に
@@ -30,5 +35,5 @@ description: Set up the installed MATLAB Result Store plugin, prepare its depend
 読める。`RESULT_STORE_ROOT`や起動引数を指定した場合はそちらが優先される。
 
 MATLABを新規起動しない。solverや`store.m`を実行しない。保存データの作成・変更は行わない。
-Plot未出力はセットアップ失敗ではない。図の出力が必要な場合は既存のMATLABセッションで
-`resultstore.exportCatalog` / `resultstore.exportPlot`を使う手順を案内する。
+Plot未出力はセットアップ失敗ではない。通常は`resultstore.connect(root)`で既存セッションへ接続する。
+オフライン閲覧やライブ描画の対応外の図には`resultstore.exportCatalog` / `resultstore.exportPlot`を使える。

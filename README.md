@@ -6,7 +6,7 @@ MATLAB Result Storeに保存された結果を検索し、図を見ながらAI�
 - **Skill**: 保存フレームワークの概念・利用手順・結果解釈・トラブル対応。
 - **Extension**: Schemeと条件を画面で選び、Plotlyで拡大・縮小し、選択した結果について質問する。
 
-MCPサーバーはSQLiteとv7.3 MATを直接読み、MATLABを起動しない。既存Plotを変換するときだけ、利用中のMATLABセッションでfig2plotlyを使う。描画関数の数式や正規化は変更しない。
+MCPサーバーはSQLiteとv7.3 MATを直接読み、MATLABを起動しない。図は既存MATLABセッションに接続し、登録済みPlot関数の描画結果から生成する。PlotごとのTS関数は不要で、数式や正規化は元のMATLAB関数を使う。保存済みのfig2plotly出力も引き続き開ける。
 
 ## Codex Appへ導入する
 
@@ -41,8 +41,7 @@ Pluginのキャッシュを更新しても設定は残る。保存フォルダ�
 個人用の設定は最後に指定した1フォルダで、新しいチャットから反映される。
 
 対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。
-保存フレームワークや実験データはこのリポジトリに含まれない。図の表示は、後述のPlot出力を
-済ませたものが対象。MCP Apps UIの表示はホストの対応に依存する。
+保存フレームワークや実験データはこのリポジトリに含まれない。図の表示には、後述の既存MATLABへの接続、または保存済みのPlot出力を使う。MCP Apps UIの表示はホストの対応に依存する。
 
 ## 開発用セットアップ
 
@@ -57,7 +56,34 @@ pnpm build
 
 対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。保存フレームワークや実験データはこのリポジトリに含まれない。
 
-## 既存Plotを出力する
+## 既存MATLABに接続する
+
+利用中のMATLABセッションで一度だけ実行する。`pluginRoot`はインストールされたPluginのルート、`frameworkRoot`と`root`は実際のフレームワーク・保存先に置き換える。
+
+```matlab
+pluginRoot = "path/to/matlab-result-store-mcp";
+frameworkRoot = "path/to/LLE";
+root = fullfile(frameworkRoot, "PhCR");
+addpath(fullfile(frameworkRoot, "common"));
+addpath(root);
+addpath(fullfile(pluginRoot, "matlab"));
+resultStoreConnection = resultstore.connect(root);
+```
+
+これ以降は、ブラウザで選んだ結果の登録済みPlotを同じMATLABセッションで実行する。非表示のFigureを使い回し、Plot関数自身の軸・線の更新処理をそのまま使う。結果ごとのExportやfig2plotlyのインストールは不要。
+
+初回は系列・軸・タイトルなどを送り、次回からは変更された系列のフィールド（`x`、`y`など）と軸設定だけを送る。ブラウザは既存の図へ`Plotly.update`でまとめて反映する。系列数や構成が変わった場合、または差分の基準が一致しない場合は図全体を送る。操作が続いている間の古い描画要求はブラウザ側で省く。
+
+同じ結果・Plotの再取得ではMATの読み込みとMATLAB描画を省く。「更新」は保存結果を読み直してPlotを再実行するため、Plot関数の編集にも追従する。ブラウザ操作ではPNG・HTMLをMATLABで毎回保存せず、AIへ渡す画像はブラウザで生成する。`render_plot`を直接呼ぶ場合は既定でMATLABのPNGを返す。
+
+接続はMATLAB標準のtimerとローカルの一時ファイルを使う。Pythonや追加Toolboxは不要。`results/web/live.json`には接続情報だけを保存する。MATLABが長い計算でコールバックを処理できない間は描画要求も待つ。接続を終了する場合:
+
+```matlab
+stop(resultStoreConnection);
+delete(resultStoreConnection);
+```
+
+## オフライン用に既存Plotを出力する
 
 Plotly MATLABを別途取得する。以下は動作確認に使ったコミット。
 
@@ -115,7 +141,7 @@ pnpm preview "path/to/project" 8732
 | `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
 | `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
-| `render_plot` | 元のMATLAB FigureのPNGと、変換済みHTML・Plotly JSONへのMCP resource linkを返す |
+| `render_plot` | 既存MATLABでPlotを実行し、PNGとHTML・Plotly JSONへのresource linkを返す。接続がなければ保存済み出力を使う |
 
 検索例:
 
@@ -190,7 +216,7 @@ Codex Appへのローカル導入は上記のMarketplaceを使う。ChatGPT側�
 
 - Valueの読み出しは、v7.3 MATの密な数値・logical配列。struct/cellの展開は未対応。
 - 配列Keyの一致・複数選択は`list_candidates`の保存値を使う。任意の配列を入力して作る操作はない。
-- 図は明示的に出力した登録済みPlotのみ。fig2plotlyが扱わない描画要素やMATLABのコールバックは移植しない。元のPNGを併せて確認できる。
+- ライブ描画は2-D Cartesian axesの線・マーカー・単色のpolygon patch・xline/ylineに対応する。MATLABのUIコールバックやその他の描画要素は移植しない。対応外はエラーとして伝え、オフラインのfig2plotly出力を使用できる。フォントや凡例位置はMATLABと完全には一致しない。
 - 保存結果の計算・更新・削除を行うツールはない。
 
 ## 確認
@@ -200,7 +226,9 @@ pnpm check
 pnpm build
 ```
 
-実データではPhCRの`waveform`を使用し、MAT読み出しの1024複素要素とMATLABの値の一致、元のFigureと変換後の4系列・軸範囲の一致、HTML/JSON/UI resource、画面での選択・ズーム・質問の引き渡しを確認した。クエリは`scan_waveform`の実データでMATLABの`store.browse`と件数・行順・候補・配列の一致・除外・最近傍位置を比較した。ChatGPT本体への接続確認は別途必要。
+実データではPhCRの`waveform`を使用し、MAT読み出しの1024複素要素とMATLABの値の一致、元のFigureと変換後の4系列・軸範囲の一致、HTML/JSON/UI resource、画面での選択・ズーム・質問の引き渡しを確認した。クエリは`scan_waveform`の実データでMATLABの`store.browse`と件数・行順・候補・配列の一致・除外・最近傍位置を比較した。
+
+ライブ描画では既存のR2024aセッションを使い、`cw_solution`の2種類のPlot、`scan_waveform`、`detuning_scan_comb_power`と、polygon patch・xline/ylineを確認した。`scan_waveform`の4系列は元のMATLAB出力と全点一致し、隣の結果へは4系列の`y`だけを差分送信した。他の計算がない状態でのMCP応答は約0.29秒（MAT読み込み約15ms、Plot実行約110ms）。同じ結果では読み込み・描画を省き、基準revisionが異なる場合は全体送信で復帰した。MCPのPNG・HTML・JSON、オフライン出力の互換性と、プレビュー画面のスライダー連続切替・画像と質問の引き渡しも確認した。ChatGPT本体への接続確認は別途必要。
 
 導入は独立した個人設定でCodex CLIからMarketplace追加・Pluginインストールを行い、
 Codex app-serverによるセットアップSkill・5ツールの認識と、保存済みPlotの取得を確認した。

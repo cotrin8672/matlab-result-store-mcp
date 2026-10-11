@@ -7,12 +7,20 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@model
 import { z } from 'zod';
 import { ResultStore, jsonSafe } from './store.ts';
 import { configuredRoot } from './config.ts';
+import { livePlots } from './live.ts';
+import type { Plot } from './plots.ts';
 export { configuredRoot } from './config.ts';
+
+function plotHtml(plot: Plot) {
+  const assets = ['node_modules/mathjax/es5/tex-svg-full.js', 'node_modules/plotly.js-dist-min/plotly.min.js']
+    .map(file => `<script>${readFileSync(new URL(file, import.meta.url), 'utf8').replaceAll(/<\/script/gi, '<\\/script')}</script>`).join('');
+  return `<!doctype html><meta charset="utf-8"><style>html,body,#plot{margin:0;width:100%;height:100%}</style><script>window.MathJax={svg:{fontCache:'local'},startup:{typeset:false}};</script>${assets}<div id="plot"></div><script>const plot=${JSON.stringify(plot).replaceAll('<', '\\u003c')};MathJax.startup.promise.then(()=>Plotly.react('plot',plot.data,plot.layout,{responsive:true,displaylogo:false}));</script>`;
+}
 
 export function createServer(root?: string): McpServer {
   let store: ResultStore | undefined;
   const getStore = () => store ??= new ResultStore(root ?? configuredRoot());
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.1.1' });
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.0' });
   const uiUri = 'ui://result-store/browser.html';
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const scheme = z.string().min(1).describe('Active Scheme ID from list_schemes.');
@@ -76,29 +84,53 @@ export function createServer(root?: string): McpServer {
   }, async a => result(await getStore().getResult(a.scheme, a.row_id, a.include_values, a.slice, a.max_elements)));
 
   registerAppTool(server, 'render_plot', {
-    description: 'Return the PNG preview of an existing registered Plot, its parameter conditions, and MCP resource links to interactive offline HTML and Plotly JSON. Uses fig2plotly exports; never starts MATLAB. Missing/stale exports must be regenerated with resultstore.exportPlot in an existing MATLAB session. PNG is the original MATLAB Figure; HTML is its fig2plotly conversion.',
-    inputSchema: z.object({ scheme, row_id: rowId, plot_index: plotIndex }), annotations,
+    description: 'Render an existing registered MATLAB Plot through an already connected MATLAB session, or read a saved fig2plotly export. Never starts MATLAB. Live connection: resultstore.connect(root) in the existing session. include_preview returns a MATLAB PNG for interpretation; the app generates its own image. known_revision enables incremental updates of changed trace fields and axes; refresh reloads the result and reruns the Plot.',
+    inputSchema: z.object({ scheme, row_id: rowId, plot_index: plotIndex,
+      include_preview: z.boolean().default(true), known_revision: z.string().optional(), refresh: z.boolean().default(false) }), annotations,
     _meta: { ui: { resourceUri: uiUri, visibility: ['app', 'model'] } },
   }, async a => {
     const store = getStore();
-    const artifact = store.plotArtifact(a.scheme, a.row_id, a.plot_index);
+    const native = livePlots(store.root), session = await native.session();
     const base = `result-store://plots/${encodeURIComponent(a.scheme)}/${a.row_id}/${a.plot_index}`;
+    if (session) {
+      const scheme = store.scheme(a.scheme), row = store.record(scheme, a.row_id);
+      const rendered = await native.render(session, a.scheme, a.row_id, a.plot_index, a.include_preview, a.refresh, a.known_revision);
+      if (rendered.payload !== row.__store_payload) throw new Error('The saved result changed during rendering. Refresh the Plot.');
+      const reply = result({ scheme: a.scheme, ...store.row(scheme, row), plot_index: a.plot_index,
+        plot_name: rendered.plot_name, payload: rendered.payload, source: 'live', revision: rendered.revision,
+        timings: rendered.timings, html_uri: `${base}/plot.html`, plotly_uri: `${base}/plot.json` });
+      return { ...reply, _meta: { plot_update: rendered.update }, content: [
+        ...reply.content,
+        ...(rendered.preview ? [{ type: 'image' as const, mimeType: 'image/png', data: rendered.preview }] : []),
+        { type: 'resource_link' as const, uri: `${base}/plot.html`, name: 'Interactive Plot', mimeType: 'text/html' },
+        { type: 'resource_link' as const, uri: `${base}/plot.json`, name: 'Plotly data/layout', mimeType: 'application/json' },
+      ] };
+    }
+    const artifact = store.plotArtifact(a.scheme, a.row_id, a.plot_index);
     const { folder, ...metadata } = artifact;
     const reply = result({ ...metadata, html_uri: `${base}/plot.html`, plotly_uri: `${base}/plot.json` });
     return { ...reply, content: [
       ...reply.content,
-      { type: 'image' as const, mimeType: 'image/png', data: readFileSync(store.file(`${folder}/preview.png`)).toString('base64') },
+      ...(a.include_preview ? [{ type: 'image' as const, mimeType: 'image/png', data: readFileSync(store.file(`${folder}/preview.png`)).toString('base64') }] : []),
       { type: 'resource_link' as const, uri: `${base}/plot.html`, name: 'Interactive Plot', mimeType: 'text/html' },
       { type: 'resource_link' as const, uri: `${base}/plot.json`, name: 'Plotly data/layout', mimeType: 'application/json' },
     ] };
   });
 
   server.registerResource('plot-artifact', new ResourceTemplate('result-store://plots/{scheme}/{rowId}/{plotIndex}/{file}', { list: undefined }), {
-    description: 'Interactive HTML or Plotly JSON for an exported registered Plot.',
+    description: 'Interactive HTML or Plotly JSON for a live or exported registered Plot.',
   }, async (uri, vars) => {
     const store = getStore();
     if (typeof vars.scheme !== 'string' || typeof vars.rowId !== 'string' || typeof vars.plotIndex !== 'string' || typeof vars.file !== 'string') throw new Error('Invalid Plot resource URI.');
     if (!['plot.html', 'plot.json'].includes(vars.file) || !/^[1-9]\d*$/.test(vars.plotIndex)) throw new Error('Unknown Plot resource.');
+    const native = livePlots(store.root), session = await native.session();
+    if (session) {
+      const scheme = store.scheme(vars.scheme), row = store.record(scheme, vars.rowId);
+      let rendered = native.cached(vars.scheme, vars.rowId, Number(vars.plotIndex));
+      if (!rendered || rendered.payload !== row.__store_payload) rendered = await native.render(session, vars.scheme, vars.rowId, Number(vars.plotIndex), false, false);
+      return { contents: [{ uri: uri.href, mimeType: vars.file === 'plot.html' ? 'text/html' : 'application/json',
+        text: vars.file === 'plot.html' ? plotHtml(rendered.plot) : JSON.stringify(rendered.plot) }] };
+    }
     const artifact = store.plotArtifact(vars.scheme, vars.rowId, Number(vars.plotIndex));
     return { contents: [{ uri: uri.href, mimeType: vars.file === 'plot.html' ? 'text/html' : 'application/json', text: readFileSync(store.file(`${artifact.folder}/${vars.file}`), 'utf8') }] };
   });

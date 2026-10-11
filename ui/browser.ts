@@ -1,6 +1,7 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
+import { applyPlotUpdate, type Plot, type PlotState, type PlotUpdate } from '../plots.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
 type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots: { index: number; name: string }[] | null };
@@ -8,13 +9,14 @@ type Catalog = { schemes: Scheme[]; plot_catalog: string };
 type Row = { row_id: string; keys: Record<string, unknown>; key_labels: Record<string, string> };
 type Page = { rows: Row[]; total: number; matched_total: number; first_match: string | null; selected_matches: boolean };
 type Artifact = Row & { scheme: string; plot_index: number; plot_name: string; plotly_uri: string; payload: string };
-type Plot = { data: unknown[]; layout: Record<string, unknown>; frames?: unknown[] };
 type Condition = { id: number; key: Key; definition: QueryDefinition; values: QueryValue[]; all: boolean;
   total: number; domain: Candidate[]; domainFilters: Filter[]; known: Map<string, Candidate>; positions: number[]; sync?: () => void };
 declare const Plotly: {
   react(element: HTMLElement, data: unknown[], layout: Record<string, unknown>, config: Record<string, unknown>): Promise<void>;
   purge(element: HTMLElement): void;
   addFrames(element: HTMLElement, frames: unknown[]): Promise<void>;
+  update(element: HTMLElement, data: Record<string, unknown>, layout: Record<string, unknown>, indices: number[]): Promise<void>;
+  toImage(element: HTMLElement, options: Record<string, unknown>): Promise<string>;
   Plots: { resize(element: HTMLElement): Promise<void> };
 };
 declare const MathJax: { startup: { promise: Promise<void> } };
@@ -26,6 +28,7 @@ const status = element('status'), ask = element<HTMLButtonElement>('ask');
 const dialog = element<HTMLDialogElement>('picker-dialog');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
+let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
 let conditions: Condition[] = [];
 
 function showError(error: unknown) { status.textContent = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
@@ -285,11 +288,11 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
   if (!target) {
     selectedRowId = undefined; await clearPlot(); if (token !== request) return;
     element('conditions').textContent = page.matched_total ? '結果を選択してください。' : '該当結果なし';
-    note(catalog.plot_catalog === 'ready' ? '' : 'Plot一覧の出力が必要です。MATLABで resultstore.exportCatalog(root) を実行してください。'); highlight(); return;
+    note(catalog.plot_catalog === 'ready' ? '' : '既存MATLABで resultstore.connect(root) を実行してください。'); highlight(); return;
   }
   selectedRowId = target; highlight();
   element('conditions').textContent = `${currentScheme().id} / RowId ${target}${page.selected_matches || (!preferredRowId && page.matched_total === 1) ? '' : '（条件外）'} — 保存条件とValue`;
-  if (force || !selected || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply);
+  if (force || !selected || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, force);
 }
 async function selectRow(rowId: string, reply?: CallToolResult) {
   const token = ++request;
@@ -301,26 +304,54 @@ async function selectRow(rowId: string, reply?: CallToolResult) {
   renderQueries(); renderParameters(); await evaluate(token, rowId, reply);
 }
 async function clearPlot() {
-  selected = undefined; ask.disabled = true; Plotly.purge(element('plot')); element('details').textContent = '';
+  selected = undefined; renderedPlot = undefined; ask.disabled = true; Plotly.purge(element('plot')); element('details').textContent = '';
   await app.updateModelContext({ content: [], structuredContent: {} });
 }
-async function loadSelection(rowId: string, token: number, reply?: CallToolResult) {
-  await clearPlot(); if (token !== request) return;
+async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
+  ask.disabled = true;
+  const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
+  plotQueue = task.catch(() => {});
+  try { await task; }
+  catch (error) { if (token !== request) return; await clearPlot(); throw error; }
+}
+async function drawSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
+  if (token !== request) return;
   note('Plotを読み込み中…');
   const args = { scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
   const details = await call<{ keys: Record<string, unknown>; values: Record<string, { class?: string; shape?: number[] }> }>('get_result', { scheme: args.scheme, row_id: rowId });
   if (token !== request) return;
   element('details').textContent = `${JSON.stringify(details.keys)}\n` + Object.entries(details.values).map(([name, v]) => `${name}: ${v.class ?? '?'} [${v.shape?.join(' × ') ?? '?'}]`).join(' · ');
-  if (!currentScheme().plots?.length) { note(catalog.plot_catalog === 'ready' ? '登録済みPlotがありません。' : 'Plot一覧の出力が必要です。MATLABで resultstore.exportCatalog(root) を実行してください。'); return; }
-  const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: args });
-  const artifact = data<Artifact>(response), resource = await app.readServerResource({ uri: artifact.plotly_uri });
-  const content = resource.contents.find(c => 'text' in c);
-  if (!content || !('text' in content)) throw new Error('Plotデータを読み取れませんでした。');
-  const plot = JSON.parse(content.text) as Plot; await MathJax.startup.promise; if (token !== request) return;
-  delete plot.layout.width; delete plot.layout.height; plot.layout.autosize = true;
-  await Plotly.react(element('plot'), plot.data, plot.layout, { responsive: true, displaylogo: false, showLink: false });
-  if (plot.frames?.length) await Plotly.addFrames(element('plot'), plot.frames); if (token !== request) return;
-  selected = artifact; const image = response.content.find(c => c.type === 'image');
+  if (!currentScheme().plots?.length) { await clearPlot(); note(catalog.plot_catalog === 'ready' ? '登録済みPlotがありません。' : '既存MATLABで resultstore.connect(root) を実行してください。'); return; }
+  const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh } });
+  const artifact = data<Artifact>(response);
+  if (token !== request) return;
+  let update = response._meta?.plot_update as PlotUpdate | undefined;
+  if (!update || (!update.plot && update.base_revision !== renderedPlot?.revision)) {
+    const resource = await app.readServerResource({ uri: artifact.plotly_uri });
+    const content = resource.contents.find(c => 'text' in c);
+    if (!content || !('text' in content)) throw new Error('Plotデータを読み取れませんでした。');
+    update = { revision: '', plot: JSON.parse(content.text) as Plot };
+  }
+  await MathJax.startup.promise; if (token !== request) return;
+  const next = applyPlotUpdate(renderedPlot, update);
+  if (update.plot) {
+    delete next.plot.layout.width; delete next.plot.layout.height; next.plot.layout.autosize = true;
+    await Plotly.react(element('plot'), next.plot.data, next.plot.layout, { responsive: true, displaylogo: false, showLink: false });
+    if (next.plot.frames?.length) await Plotly.addFrames(element('plot'), next.plot.frames);
+  } else {
+    const traces = update.traces ?? [], fields = new Set(traces.flatMap(trace => Object.keys(trace.values)));
+    if (traces.length || Object.keys(update.layout ?? {}).length) await Plotly.update(element('plot'),
+      Object.fromEntries([...fields].map(key => [key, traces.map(trace => trace.values[key])])), update.layout ?? {}, traces.map(trace => trace.index));
+  }
+  renderedPlot = next;
+  if (token !== request) return;
+  let image = response.content.find(c => c.type === 'image');
+  if (!image) {
+    const png = await Plotly.toImage(element('plot'), { format: 'png', width: 1100, height: 800 });
+    image = { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) };
+  }
+  if (token !== request) return;
+  selected = artifact;
   await app.updateModelContext({ content: [{ type: 'text', text: `選択した保存結果: ${JSON.stringify(artifact)}` }, ...(image ? [image] : [])], structuredContent: { selection: artifact } });
   if (token !== request) return; ask.disabled = false; note('');
 }
