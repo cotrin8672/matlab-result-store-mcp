@@ -16,11 +16,6 @@ export class LivePlots {
   private queue: Promise<unknown> = Promise.resolve();
   constructor(root: string) { this.root = root; }
 
-  cached(scheme: string, rowId: string, plotIndex: number) {
-    const value = this.current;
-    return value?.scheme === scheme && value.row_id === rowId && value.plot_index === plotIndex ? value : undefined;
-  }
-
   async session(start = true): Promise<Session | undefined> {
     return start ? ensureWorker(this.root, () => this.readSession()) : this.readSession();
   }

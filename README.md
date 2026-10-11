@@ -129,8 +129,11 @@ pnpm preview "path/to/project" 8732
 | `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
 | `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
-| `render_plot` | 共有の描画専用MATLABでPlotを実行し、PNGとHTML・Plotly JSONへのresource linkを返す。有効な保存済み出力も使える |
+| `render_plot` | 共有の描画専用MATLABでPlotを実行し、PNGとHTML・Plotly JSONへのresource linkを返す。描画完了後、同じ保存先を開いている既存画面にも反映する |
 | `annotate_plot` | 指定したPlotの点ラベル・縦線・横線を設定する。同じ閲覧画面に反映し、空配列でAI注釈を消す |
+
+AIの`render_plot`が完了すると、既存のMatlabResults画面が約1秒間隔で完了通知を読み、Scheme・RowId・Plotを同期する。同じ結果の再描画も反映する。新しいタブや会話コンテキストは追加しない。画面内の行選択・Sweepは通知を発生させないので、更新を繰り返さない。表示先の通知だけをOSの一時フォルダで保存先ごとに共有し、実験データは変更しない。
+`annotate_plot`も対象の図を既存画面に表示する。同じ図への注釈変更は注釈だけを更新する。
 
 検索例:
 

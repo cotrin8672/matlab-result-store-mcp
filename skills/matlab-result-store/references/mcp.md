@@ -11,6 +11,7 @@
    表示ラベルから配列を復元しない。`not_in`は「すべて」の候補から指定値を除外する。
 3. `get_result`で条件とValueの型・サイズを確認する。
 4. `render_plot`で登録済みPlotのPNGを見る。図の軸・単位・正規化を確かめて解釈する。
+   描画完了後、同じ保存先を開いている既存のMatlabResults画面にも対象が反映される。画面を開き直す必要はない。
    描画専用MATLABで元のPlot関数を実行し、描画された線・軸からブラウザの図を生成する。
    既存の有効なfig2plotly出力も使える。`source: live`を確認すると区別できる。
 5. 精密な数値が必要なときだけ、`get_result`の`include_values`に必要なValueを指定する。
@@ -18,7 +19,7 @@
 図の解釈を示すには`annotate_plot`を使う。`point_label`は`x`・`y`・`text`、`xline`は`x`、`yline`は`y`を指定し、線にも`text`を付けられる。
 座標はデータ単位。`xaxis`・`yaxis`は対象のsubplotのPlotly軸名を指定する（省略時`x`・`y`）。軸の対応はPlotly JSONで確認する。
 `annotations`はAI注釈の一覧全体を置き換える。既存のAI注釈は`render_plot`の`plot_annotations`または`annotations_uri`で確認し、保持する分も含める。空配列でAI注釈だけを消す。
-注釈は保存され、既存の閲覧画面に反映される。別の結果には適用されない。注釈を表示するために新しいタブを開かない。
+注釈は保存され、既存の閲覧画面にも対象の図が表示される。同じ図への変更は注釈だけを更新する。別の結果には適用されない。注釈を表示するために新しいタブを開かない。
 `render_plot`のPNGは元のMATLAB図。注釈はHTML・Plotly JSON・ブラウザの図と手動追加した画像に含まれる。
 
 RowIdは十進文字列で渡す。配列はMATLABの列優先順で、複素数は`data.real`と`data.imag`。

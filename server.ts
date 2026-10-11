@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
-import { McpServer, ResourceTemplate, createMcpHandler } from '@modelcontextprotocol/server';
+import { McpServer, ResourceTemplate, createMcpHandler, type CallToolResult } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { toNodeHandler, localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/node';
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
@@ -10,6 +10,7 @@ import { configuredRoot } from './config.ts';
 import { livePlots } from './live.ts';
 import { annotationLayout, validateAnnotations, type Plot } from './plots.ts';
 import { annotationsSchema, readAnnotations, writeAnnotations } from './annotations.ts';
+import { readBrowserState, showInBrowser } from './browser.ts';
 export { configuredRoot } from './config.ts';
 
 function plotHtml(plot: Plot) {
@@ -21,7 +22,7 @@ function plotHtml(plot: Plot) {
 export function createServer(root?: string): McpServer {
   let store: ResultStore | undefined;
   const getStore = () => store ??= new ResultStore(root ?? configuredRoot());
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.6' });
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.7' });
   const uiUri = 'ui://result-store/browser.html';
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const scheme = z.string().min(1).describe('Active Scheme ID from list_schemes.');
@@ -56,9 +57,8 @@ export function createServer(root?: string): McpServer {
     const store = getStore(), backend = await plotBackend(id, rowId, plotIndex);
     if (backend.session) {
       const { native, session } = backend;
-      const row = store.record(store.scheme(id), rowId);
-      let rendered = native.cached(id, rowId, plotIndex);
-      if (!rendered || rendered.payload !== row.__store_payload) rendered = await native.render(session, id, rowId, plotIndex, false, false);
+      const rendered = await native.render(session, id, rowId, plotIndex, false, false);
+      if (rendered.payload !== store.record(store.scheme(id), rowId).__store_payload) throw new Error('The saved result changed during rendering. Refresh the Plot.');
       return { plot: rendered.plot, payload: rendered.payload, plot_name: rendered.plot_name };
     }
     const artifact = backend.artifact!;
@@ -81,6 +81,10 @@ export function createServer(root?: string): McpServer {
     inputSchema: z.object({}), annotations,
     _meta: { ui: { resourceUri: uiUri, visibility: ['app', 'model'] }, 'openai/ui': { entrypoints: [{ type: 'global' }, { type: 'thread' }] } },
   }, async () => result(await listSchemes()));
+
+  server.registerResource('browser-state', 'result-store://browser/state', {
+    description: 'Latest completed model-requested Plot for the existing browser.', mimeType: 'application/json',
+  }, async uri => ({ contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(readBrowserState(getStore().root)) }] }));
 
   server.registerTool('list_schemes', {
     description: 'List active Schemes, Keys, Values, registered Plots and record counts without opening a browser. A missing/stale Plot catalog is refreshed by one shared dedicated MATLAB Plot worker; calculation sessions are not used.',
@@ -120,39 +124,44 @@ export function createServer(root?: string): McpServer {
   }, async a => result(await getStore().getResult(a.scheme, a.row_id, a.include_values, a.slice, a.max_elements)));
 
   server.registerTool('render_plot', {
-    description: 'Render a registered MATLAB Plot through one automatically started shared Plot worker, independent of calculation sessions, or read a saved fig2plotly export. Does not open a browser. include_preview returns the original MATLAB PNG; AI annotations are in plot_annotations, HTML/JSON and the browser image. known_revision enables incremental updates of changed trace fields and axes; refresh reloads the result and reruns the Plot.',
+    description: 'Render a registered MATLAB Plot through one automatically started shared Plot worker, independent of calculation sessions, or read a saved fig2plotly export. After rendering, update an already open browser for this Store without opening a tab. include_preview returns the original MATLAB PNG; AI annotations are in plot_annotations, HTML/JSON and the browser image. known_revision enables incremental updates of changed trace fields and axes; refresh reloads the result and reruns the Plot.',
     inputSchema: z.object({ scheme, row_id: rowId, plot_index: plotIndex,
       include_preview: z.boolean().default(true), known_revision: z.string().optional(), refresh: z.boolean().default(false) }), annotations,
-  }, async a => {
+  }, async (a, context) => {
     const store = getStore();
+    function completed(reply: CallToolResult) {
+      if (context.mcpReq._meta?.['matlab-results/browser'] !== true) showInBrowser(store.root, { scheme: a.scheme, row_id: a.row_id, plot_index: a.plot_index }, 'plot');
+      return reply;
+    }
     const backend = await plotBackend(a.scheme, a.row_id, a.plot_index, a.refresh);
     const base = `result-store://plots/${encodeURIComponent(a.scheme)}/${a.row_id}/${a.plot_index}`;
     if (backend.session) {
       const { native, session } = backend;
-      const scheme = store.scheme(a.scheme), row = store.record(scheme, a.row_id);
+      const scheme = store.scheme(a.scheme);
       const rendered = await native.render(session, a.scheme, a.row_id, a.plot_index, a.include_preview, a.refresh, a.known_revision);
+      const row = store.record(scheme, a.row_id);
       if (rendered.payload !== row.__store_payload) throw new Error('The saved result changed during rendering. Refresh the Plot.');
       const reply = result({ scheme: a.scheme, ...store.row(scheme, row), plot_index: a.plot_index,
         plot_name: rendered.plot_name, payload: rendered.payload, source: 'live', revision: rendered.revision,
         timings: rendered.timings, plot_annotations: readAnnotations(store, a.scheme, a.row_id, a.plot_index, rendered.payload),
         html_uri: `${base}/plot.html`, plotly_uri: `${base}/plot.json`, annotations_uri: `${base}/annotations.json` });
-      return { ...reply, _meta: { plot_update: rendered.update }, content: [
+      return completed({ ...reply, _meta: { plot_update: rendered.update }, content: [
         ...reply.content,
         ...(rendered.preview ? [{ type: 'image' as const, mimeType: 'image/png', data: rendered.preview }] : []),
         { type: 'resource_link' as const, uri: `${base}/plot.html`, name: 'Interactive Plot', mimeType: 'text/html' },
         { type: 'resource_link' as const, uri: `${base}/plot.json`, name: 'Plotly data/layout', mimeType: 'application/json' },
-      ] };
+      ] });
     }
     const artifact = backend.artifact!;
     const { folder, ...metadata } = artifact;
     const reply = result({ ...metadata, plot_annotations: readAnnotations(store, a.scheme, a.row_id, a.plot_index, artifact.payload),
       html_uri: `${base}/plot.html`, plotly_uri: `${base}/plot.json`, annotations_uri: `${base}/annotations.json` });
-    return { ...reply, content: [
+    return completed({ ...reply, content: [
       ...reply.content,
       ...(a.include_preview ? [{ type: 'image' as const, mimeType: 'image/png', data: readFileSync(store.file(`${folder}/preview.png`)).toString('base64') }] : []),
       { type: 'resource_link' as const, uri: `${base}/plot.html`, name: 'Interactive Plot', mimeType: 'text/html' },
       { type: 'resource_link' as const, uri: `${base}/plot.json`, name: 'Plotly data/layout', mimeType: 'application/json' },
-    ] };
+    ] });
   });
 
   server.registerTool('annotate_plot', {
@@ -165,6 +174,7 @@ export function createServer(root?: string): McpServer {
     const saved = writeAnnotations(store, a.scheme, a.row_id, a.plot_index, payload, a.annotations);
     const base = `result-store://plots/${encodeURIComponent(a.scheme)}/${a.row_id}/${a.plot_index}`;
     const scheme = store.scheme(a.scheme), row = store.record(scheme, a.row_id);
+    showInBrowser(store.root, { scheme: a.scheme, row_id: a.row_id, plot_index: a.plot_index }, 'annotations');
     return result({ scheme: a.scheme, ...store.row(scheme, row), plot_index: a.plot_index, plot_name, payload, ...saved,
       annotations_uri: `${base}/annotations.json`, plotly_uri: `${base}/plot.json`, html_uri: `${base}/plot.html` });
   });

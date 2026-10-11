@@ -51,5 +51,5 @@ export function applyPlotUpdate(current: PlotState | undefined, update: PlotUpda
     if (!data[trace.index]) throw new Error('Invalid incremental Plot trace.');
     data[trace.index] = { ...data[trace.index], ...trace.values };
   }
-  return { revision: update.revision, plot: { data, layout: { ...current.plot.layout, ...update.layout } } };
+  return { revision: update.revision, plot: { ...current.plot, data, layout: { ...current.plot.layout, ...update.layout } } };
 }

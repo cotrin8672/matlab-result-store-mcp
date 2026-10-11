@@ -296,13 +296,13 @@ export class ResultStore {
     try {
       manifest = JSON.parse(readFileSync(this.file(`${folder}/manifest.json`), 'utf8'));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`No live MATLAB connection or saved Plot. In the existing MATLAB session run resultstore.connect(root). An offline export can also be created with resultstore.exportPlot("${id}", uint64(${rowId}), ${plotIndex}, root).`);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('Plot export is missing.');
       throw error;
     }
     const catalog = this.catalog();
     const plot = catalog.entries.find(s => s.id === id)?.plots.find(p => p.index === plotIndex);
     if (manifest.version !== 1 || manifest.scheme !== id || manifest.row_id !== rowId || manifest.plot_index !== plotIndex || manifest.payload !== row.__store_payload || catalog.status !== 'ready' || plot?.name !== manifest.plot_name) {
-      throw new Error('Plot export is stale. Export this Plot again in an existing MATLAB session.');
+      throw new Error('Plot export is stale.');
     }
     return { ...manifest, ...this.row(scheme, row), folder, html_path: this.file(`${folder}/plot.html`) };
   }

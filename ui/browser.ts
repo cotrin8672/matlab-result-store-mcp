@@ -2,6 +2,7 @@ import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextp
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
 import { annotationLayout, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
+import type { BrowserSelection, BrowserState } from '../browser.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
 type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots: { index: number; name: string }[] | null };
@@ -31,7 +32,7 @@ const compactLayout = matchMedia('(max-width:760px)');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
 let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
-let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, annotationsPending = false;
+let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, updatesPending = false, browserRevision = '';
 let conditions: Condition[] = [];
 
 function showError(error: unknown) { status.textContent = status.title = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
@@ -289,7 +290,7 @@ function renderTable(page: Page) {
   element<HTMLButtonElement>('previous').disabled = offset === 0;
   element<HTMLButtonElement>('next').disabled = offset + 25 >= page.total; highlight();
 }
-async function evaluate(token: number, preferredRowId?: string, reply?: CallToolResult, force = false) {
+async function evaluate(token: number, preferredRowId?: string, reply?: CallToolResult, force = false, refresh = false) {
   const page = await call<Page>('search_results', { scheme: currentScheme().id, filters: compile('Fixed'), parameters: compile('Parametric'),
     selected_row_id: preferredRowId ?? selectedRowId, offset, limit: 25, sort_key: element<HTMLSelectElement>('sort').value, descending: element('direction').textContent === '↓' });
   if (token !== request) return;
@@ -300,23 +301,30 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
     note(''); highlight(); return;
   }
   selectedRowId = target; highlight();
-  if (force || !selected || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, force);
+  if (force || !selected || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
+  else note('');
 }
-async function selectRow(rowId: string, reply?: CallToolResult) {
+async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
   const token = ++request;
   for (const c of conditions.filter(c => c.definition.mode === 'Parametric' && c.definition.op === 'eq')) {
     const result = await domain(c, { locate: [{ candidate: rowId }] }); if (token !== request) return;
     remember(c, result.locations); c.values = [{ candidate: rowId }];
     if (result.locations[0]) { c.values = [result.locations[0].value]; c.positions = [result.locations[0].index]; }
   }
-  renderQueries(); renderParameters(); await evaluate(token, rowId, reply);
+  renderQueries(); renderParameters(); await evaluate(token, rowId, reply, force);
 }
-async function clearPlot() {
-  selected = undefined; renderedPlot = undefined; ask.disabled = addContextButton.disabled = true; Plotly.purge(element('plot'));
-  plotAnnotations = { revision: '', annotations: [] };
+async function clearPlot(token = request) {
+  ask.disabled = addContextButton.disabled = true;
+  const task = plotQueue.then(() => {
+    if (token !== request) return;
+    selected = undefined; renderedPlot = undefined; Plotly.purge(element('plot'));
+    plotAnnotations = { revision: '', annotations: [] };
+  });
+  plotQueue = task.catch(() => {}); await task;
 }
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   ask.disabled = addContextButton.disabled = true;
+  if (!currentScheme().plots?.length) { await clearPlot(token); if (token === request) note('登録済みPlotがありません。'); return; }
   const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
   plotQueue = task.catch(() => {});
   try { await task; }
@@ -326,8 +334,8 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (token !== request) return;
   note('Plotを読み込み中…');
   const args = { scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
-  if (!currentScheme().plots?.length) { await clearPlot(); note('登録済みPlotがありません。'); return; }
-  const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh } });
+  const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh },
+    _meta: { 'matlab-results/browser': true } });
   const artifact = data<Artifact>(response);
   if (token !== request) return;
   let update = response._meta?.plot_update as PlotUpdate | undefined;
@@ -364,6 +372,25 @@ async function refreshAnnotations(force = false) {
   await Plotly.relayout(element('plot'), annotationLayout(renderedPlot.plot, saved.annotations));
   plotAnnotations = saved;
 }
+async function showSelection(selection: BrowserSelection, reply?: CallToolResult) {
+  if (!catalog?.schemes.some(s => s.id === selection.scheme && s.plots?.some(p => p.index === selection.plot_index)))
+    await accept(await app.callServerTool({ name: 'list_schemes', arguments: {} }));
+  if (currentScheme().id !== selection.scheme) changeScheme(selection.scheme);
+  plotSelect.value = String(selection.plot_index);
+  await selectRow(selection.row_id, reply, true);
+}
+async function refreshBrowser() {
+  const token = request;
+  const resource = await app.readServerResource({ uri: 'result-store://browser/state' });
+  const content = resource.contents.find(c => 'text' in c);
+  if (!content || !('text' in content)) throw new Error('Plotの表示先を読み取れませんでした。');
+  const state = JSON.parse(content.text) as BrowserState;
+  if (state.revision === browserRevision) return false;
+  if (token !== request) return false;
+  const samePlot = state.selection && selected?.scheme === state.selection.scheme && selected.row_id === state.selection.row_id && selected.plot_index === state.selection.plot_index;
+  if (state.selection && !(state.kind === 'annotations' && samePlot)) await showSelection(state.selection);
+  browserRevision = state.revision; return !(state.kind === 'annotations' && samePlot);
+}
 async function addContext() {
   const artifact = selected; if (!artifact) return;
   const task = plotQueue.then(async () => {
@@ -391,8 +418,7 @@ async function accept(reply: CallToolResult) {
     if (!catalog.schemes.length) { note('登録済みのSchemeがありません。'); return; }
     changeScheme(catalog.schemes.some(s => s.id === old) ? old : undefined); await refreshFixed();
   } else if (payload.plotly_uri && payload.scheme && payload.row_id) {
-    if (!catalog) await accept(await app.callServerTool({ name: 'list_schemes', arguments: {} }));
-    changeScheme(payload.scheme); plotSelect.value = String(payload.plot_index); await refreshFixed(); await selectRow(payload.row_id, reply);
+    await showSelection(payload as Artifact, reply);
   }
 }
 
@@ -406,7 +432,7 @@ element('refresh').onclick = () => run((async () => {
     schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`))); schemeSelect.value = old; configurePlots(true);
     conditions = conditions.filter(c => currentScheme().keys.some(k => k.name === c.key.name));
     conditions.forEach(c => { c.key = currentScheme().keys.find(k => k.name === c.key.name)!; });
-    await refreshFixed(); if (selectedRowId) await evaluate(++request, selectedRowId, undefined, true);
+    await refreshFixed(); if (selectedRowId) await evaluate(++request, selectedRowId, undefined, true, true);
   }
   else await accept({ content: [], structuredContent: updated });
 })());
@@ -428,8 +454,11 @@ new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requ
 function theme(context: ReturnType<App['getHostContext']>) { if (context?.theme) applyDocumentTheme(context.theme); if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables); }
 app.addEventListener('hostcontextchanged', theme); app.ontoolresult = reply => run(accept(reply)); await app.connect(); theme(app.getHostContext());
 setInterval(() => {
-  if (document.hidden || !selected || annotationsPending) return;
-  annotationsPending = true;
-  const task = plotQueue.then(() => refreshAnnotations()); plotQueue = task.catch(() => {});
-  run(task.finally(() => { annotationsPending = false; }));
+  if (document.hidden || !catalog || updatesPending) return;
+  updatesPending = true;
+  run((async () => {
+    if (await refreshBrowser()) return;
+    const task = plotQueue.then(() => refreshAnnotations()); plotQueue = task.catch(() => {});
+    await task;
+  })().finally(() => { updatesPending = false; }));
 }, 1000);
