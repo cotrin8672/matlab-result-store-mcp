@@ -21,7 +21,10 @@ catalog = struct('version', 1, 'snapshot', string(store.backend("metadata", root
 folder = fullfile(root, "results", "web");
 if ~isfolder(folder), mkdir(folder); end
 path = fullfile(folder, "catalog.json");
-fid = fopen(path, 'w', 'n', 'UTF-8');
+temporary = path + "." + string(java.util.UUID.randomUUID()) + ".tmp";
+fid = fopen(temporary, 'w', 'n', 'UTF-8');
 cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, '%s', jsonencode(catalog));
+clear cleanup
+movefile(temporary, path, 'f');
 end

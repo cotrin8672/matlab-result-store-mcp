@@ -1,14 +1,14 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
-import { applyPlotUpdate, type Plot, type PlotState, type PlotUpdate } from '../plots.ts';
+import { annotationLayout, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
 type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots: { index: number; name: string }[] | null };
 type Catalog = { schemes: Scheme[]; plot_catalog: string };
 type Row = { row_id: string; keys: Record<string, unknown>; key_labels: Record<string, string> };
 type Page = { rows: Row[]; total: number; matched_total: number; first_match: string | null; selected_matches: boolean };
-type Artifact = Row & { scheme: string; plot_index: number; plot_name: string; plotly_uri: string; payload: string };
+type Artifact = Row & { scheme: string; plot_index: number; plot_name: string; plotly_uri: string; annotations_uri: string; payload: string };
 type Condition = { id: number; key: Key; definition: QueryDefinition; values: QueryValue[]; all: boolean;
   total: number; domain: Candidate[]; domainFilters: Filter[]; known: Map<string, Candidate>; positions: number[]; sync?: () => void };
 declare const Plotly: {
@@ -16,6 +16,7 @@ declare const Plotly: {
   purge(element: HTMLElement): void;
   addFrames(element: HTMLElement, frames: unknown[]): Promise<void>;
   update(element: HTMLElement, data: Record<string, unknown>, layout: Record<string, unknown>, indices: number[]): Promise<void>;
+  relayout(element: HTMLElement, layout: Record<string, unknown>): Promise<void>;
   toImage(element: HTMLElement, options: Record<string, unknown>): Promise<string>;
   Plots: { resize(element: HTMLElement): Promise<void> };
 };
@@ -30,6 +31,7 @@ const compactLayout = matchMedia('(max-width:760px)');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
 let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
+let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, annotationsPending = false;
 let conditions: Condition[] = [];
 
 function showError(error: unknown) { status.textContent = status.title = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
@@ -295,11 +297,9 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
   const target = preferredRowId ?? (page.selected_matches ? selectedRowId : page.matched_total === 1 ? page.first_match ?? undefined : undefined);
   if (!target) {
     selectedRowId = undefined; await clearPlot(); if (token !== request) return;
-    element('conditions').textContent = page.matched_total ? '結果を選択してください。' : '該当結果なし';
-    note(catalog.plot_catalog === 'ready' ? '' : '既存MATLABで resultstore.connect(root) を実行してください。'); highlight(); return;
+    note(''); highlight(); return;
   }
   selectedRowId = target; highlight();
-  element('conditions').textContent = `${currentScheme().id} / RowId ${target}${page.selected_matches || (!preferredRowId && page.matched_total === 1) ? '' : '（条件外）'} — 保存条件とValue`;
   if (force || !selected || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, force);
 }
 async function selectRow(rowId: string, reply?: CallToolResult) {
@@ -312,7 +312,8 @@ async function selectRow(rowId: string, reply?: CallToolResult) {
   renderQueries(); renderParameters(); await evaluate(token, rowId, reply);
 }
 async function clearPlot() {
-  selected = undefined; renderedPlot = undefined; ask.disabled = addContextButton.disabled = true; Plotly.purge(element('plot')); element('details').textContent = '';
+  selected = undefined; renderedPlot = undefined; ask.disabled = addContextButton.disabled = true; Plotly.purge(element('plot'));
+  plotAnnotations = { revision: '', annotations: [] };
 }
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   ask.disabled = addContextButton.disabled = true;
@@ -325,10 +326,7 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (token !== request) return;
   note('Plotを読み込み中…');
   const args = { scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
-  const details = await call<{ keys: Record<string, unknown>; values: Record<string, { class?: string; shape?: number[] }> }>('get_result', { scheme: args.scheme, row_id: rowId });
-  if (token !== request) return;
-  element('details').textContent = `${JSON.stringify(details.keys)}\n` + Object.entries(details.values).map(([name, v]) => `${name}: ${v.class ?? '?'} [${v.shape?.join(' × ') ?? '?'}]`).join(' · ');
-  if (!currentScheme().plots?.length) { await clearPlot(); note(catalog.plot_catalog === 'ready' ? '登録済みPlotがありません。' : '既存MATLABで resultstore.connect(root) を実行してください。'); return; }
+  if (!currentScheme().plots?.length) { await clearPlot(); note('登録済みPlotがありません。'); return; }
   const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh } });
   const artifact = data<Artifact>(response);
   if (token !== request) return;
@@ -352,7 +350,19 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   }
   renderedPlot = next;
   if (token !== request) return;
-  selected = artifact; ask.disabled = addContextButton.disabled = false; note('');
+  selected = artifact; plotAnnotations = { revision: '', annotations: [] };
+  await refreshAnnotations(true); if (token !== request) return;
+  ask.disabled = addContextButton.disabled = false; note('');
+}
+async function refreshAnnotations(force = false) {
+  const artifact = selected; if (!artifact || !renderedPlot) return;
+  const resource = await app.readServerResource({ uri: artifact.annotations_uri });
+  const content = resource.contents.find(c => 'text' in c);
+  if (!content || !('text' in content)) throw new Error('Plotの注釈を読み取れませんでした。');
+  const saved = JSON.parse(content.text) as PlotAnnotations;
+  if (selected !== artifact || !renderedPlot || (!force && saved.revision === plotAnnotations.revision)) return;
+  await Plotly.relayout(element('plot'), annotationLayout(renderedPlot.plot, saved.annotations));
+  plotAnnotations = saved;
 }
 async function addContext() {
   const artifact = selected; if (!artifact) return;
@@ -365,9 +375,10 @@ async function addContext() {
     const canvas = document.createElement('canvas'); canvas.width = 1100; canvas.height = 800;
     canvas.getContext('2d')!.drawImage(preview, 0, 0, canvas.width, canvas.height);
     const png = canvas.toDataURL('image/png');
-    await app.updateModelContext({ content: [{ type: 'text', text: `選択した保存結果: ${JSON.stringify(artifact)}` },
-      { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) }], structuredContent: { selection: artifact } });
-    note('コンテキストに追加しました。'); return artifact;
+    const selection = { ...artifact, annotations: plotAnnotations.annotations };
+    await app.updateModelContext({ content: [{ type: 'text', text: `選択した保存結果: ${JSON.stringify(selection)}` },
+      { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) }], structuredContent: { selection } });
+    note('コンテキストに追加しました。'); return selection;
   });
   plotQueue = task.catch(() => {});
   return task;
@@ -416,3 +427,9 @@ let resizeFrame = 0;
 new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { if (selected) void Plotly.Plots.resize(element('plot')); }); }).observe(element('plot'));
 function theme(context: ReturnType<App['getHostContext']>) { if (context?.theme) applyDocumentTheme(context.theme); if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables); }
 app.addEventListener('hostcontextchanged', theme); app.ontoolresult = reply => run(accept(reply)); await app.connect(); theme(app.getHostContext());
+setInterval(() => {
+  if (document.hidden || !selected || annotationsPending) return;
+  annotationsPending = true;
+  const task = plotQueue.then(() => refreshAnnotations()); plotQueue = task.catch(() => {});
+  run(task.finally(() => { annotationsPending = false; }));
+}, 1000);

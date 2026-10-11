@@ -1,6 +1,6 @@
 {
   "name": "matlab-result-store",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Search MATLAB Result Store results and discuss interactive plots with their saved conditions.",
   "author": { "name": "cotrin8672" },
   "repository": "https://github.com/cotrin8672/matlab-result-store-mcp",
@@ -14,7 +14,7 @@
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/icon.svg",
     "category": "Productivity",
-    "capabilities": ["Read"]
+    "capabilities": ["Read", "Plot annotations"]
   },
   "extensions": {
     "com.openai": {

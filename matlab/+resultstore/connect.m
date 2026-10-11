@@ -1,7 +1,8 @@
-function connection = connect(root)
+function connection = connect(root, descriptorName)
 % Serve registered Plots from this MATLAB session; no engine is launched.
 arguments
     root (1, 1) string = "."
+    descriptorName (1, 1) string = "live.json"
 end
 root = string(java.io.File(char(root)).getCanonicalPath());
 resultstore.exportCatalog(root);
@@ -15,7 +16,7 @@ if ~isempty(connection), delete(connection); end
 token = char(java.util.UUID.randomUUID());
 folder = fullfile(string(tempdir), "result-store-" + token);
 mkdir(folder);
-descriptor = fullfile(root, "results", "web", "live.json");
+descriptor = fullfile(root, "results", "web", descriptorName);
 writeJson(descriptor, struct('version', 1, 'folder', folder, 'token', token, 'pid', feature('getpid')));
 fig = [];
 activeFunction = [];
@@ -40,6 +41,12 @@ start(connection);
             request = jsondecode(fileread(requestFile));
             if ~strcmp(request.token, token) || request.expires < posixtime(datetime('now', 'TimeZone', 'UTC')) * 1000
                 delete(requestFile);
+                return
+            end
+            if isfield(request, 'operation') && strcmp(request.operation, 'catalog')
+                resultstore.exportCatalog(root);
+                delete(requestFile);
+                writeJson(responseFile, struct());
                 return
             end
             if isempty(regexp(request.row_id, '^[1-9][0-9]{0,18}$', 'once'))

@@ -6,12 +6,12 @@ MATLAB Result Storeに保存された結果を検索し、図を見ながらAI�
 - **Skill**: 保存フレームワークの概念・利用手順・結果解釈・トラブル対応。
 - **Extension**: Schemeと条件を画面で選び、Plotlyで拡大・縮小し、選択した結果について質問する。
 
-MCPサーバーはSQLiteとv7.3 MATを直接読み、MATLABを起動しない。図は既存MATLABセッションに接続し、登録済みPlot関数の描画結果から生成する。PlotごとのTS関数は不要で、数式や正規化は元のMATLAB関数を使う。保存済みのfig2plotly出力も引き続き開ける。
+検索と配列取得はSQLiteとv7.3 MATを直接読み、MATLABを必要としない。図は1つの共有された描画専用MATLABで、登録済みPlot関数の描画結果から生成する。PlotごとのTS関数は不要で、数式や正規化は元のMATLAB関数を使う。保存済みのfig2plotly出力も引き続き開ける。
 
 ## Codex Appへ導入する
 
 Node.js 24以上が必要。依存関係は利用可能なpnpm、なければnpm経由で準備する。
-Codexが提供するNode.js・pnpmも利用できる。pnpmの手動インストールや、閲覧用のMATLAB起動は不要。
+Codexが提供するNode.js・pnpmも利用できる。pnpmの手動インストールや、閲覧用MATLABの手動起動は不要。描画にはMATLABが必要。
 
 1. Pluginsの「Add a marketplace」を開く。
 2. Sourceに`https://github.com/cotrin8672/matlab-result-store-mcp`を入力して追加する。
@@ -41,7 +41,7 @@ Pluginのキャッシュを更新しても設定は残る。保存フォルダ�
 個人用の設定は最後に指定した1フォルダで、新しいチャットから反映される。
 
 対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。
-保存フレームワークや実験データはこのリポジトリに含まれない。図の表示には、後述の既存MATLABへの接続、または保存済みのPlot出力を使う。MCP Apps UIの表示はホストの対応に依存する。
+保存フレームワークや実験データはこのリポジトリに含まれない。図の表示には、後述の描画専用MATLAB、または保存済みのPlot出力を使う。MCP Apps UIの表示はホストの対応に依存する。
 
 ## 開発用セットアップ
 
@@ -56,32 +56,19 @@ pnpm build
 
 対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。保存フレームワークや実験データはこのリポジトリに含まれない。
 
-## 既存MATLABに接続する
+## 描画専用MATLABを共有する
 
-利用中のMATLABセッションで一度だけ実行する。`pluginRoot`はインストールされたPluginのルート、`frameworkRoot`と`root`は実際のフレームワーク・保存先に置き換える。
+図やPlot一覧が必要なときに、MCPが保存先ごとに描画専用MATLABを1つだけ自動起動する。別のMCP接続やタブからも同じプロセスを共有する。計算用MATLABには接続しないので、そのセッションがBusyでも保存済み結果を描画できる。手動の`resultstore.connect(root)`は不要。
 
-```matlab
-pluginRoot = "path/to/matlab-result-store-mcp";
-frameworkRoot = "path/to/LLE";
-root = fullfile(frameworkRoot, "PhCR");
-addpath(fullfile(frameworkRoot, "common"));
-addpath(root);
-addpath(fullfile(pluginRoot, "matlab"));
-resultStoreConnection = resultstore.connect(root);
-```
+`matlab`をPATH上に置く。フレームワークの`common`は保存先から祖先をたどって検出し、保存先とPluginの`matlab`フォルダをパスに追加する。`common`が別の場所にある場合は、MATLAB標準の`MATLABPATH`に追加する。solverや`store.m`は実行しない。起動は[MATLAB標準の非対話モード](https://www.mathworks.com/help/matlab/ref/matlabwindows.html)を使い、画面を開かない。初回の起動だけ待ち時間がある。
 
-これ以降は、ブラウザで選んだ結果の登録済みPlotを同じMATLABセッションで実行する。非表示のFigureを使い回し、Plot関数自身の軸・線の更新処理をそのまま使う。結果ごとのExportやfig2plotlyのインストールは不要。
+非表示のFigureを使い回し、Plot関数自身の軸・線の更新処理をそのまま使う。結果ごとのExportやfig2plotlyのインストールは不要。
 
 初回は系列・軸・タイトルなどを送り、次回からは変更された系列のフィールド（`x`、`y`など）と軸設定だけを送る。ブラウザは既存の図へ`Plotly.update`でまとめて反映する。系列数や構成が変わった場合、または差分の基準が一致しない場合は図全体を送る。操作が続いている間の古い描画要求はブラウザ側で省く。
 
-同じ結果・Plotの再取得ではMATの読み込みとMATLAB描画を省く。「更新」は保存結果を読み直してPlotを再実行するため、Plot関数の編集にも追従する。ブラウザ操作ではPNG・HTMLをMATLABで毎回保存せず、AIへ渡す画像はブラウザで生成する。`render_plot`を直接呼ぶ場合は既定でMATLABのPNGを返す。
+同じ結果・Plotの再取得ではMATの読み込みとMATLAB描画を省く。「更新」は保存結果を読み直してPlotを再実行するため、Plot関数の編集にも追従する。ブラウザ操作ではPNG・HTMLをMATLABで毎回保存せず、AIへ渡す画像は手動追加時にブラウザで生成する。`render_plot`を直接呼ぶ場合は既定でMATLABのPNGを返す。
 
-接続はMATLAB標準のtimerとローカルの一時ファイルを使う。Pythonや追加Toolboxは不要。`results/web/live.json`には接続情報だけを保存する。MATLABが長い計算でコールバックを処理できない間は描画要求も待つ。接続を終了する場合:
-
-```matlab
-stop(resultStoreConnection);
-delete(resultStoreConnection);
-```
+通信にはMATLAB標準のtimerとローカルの一時ファイルを使う。Pythonや追加Toolboxは不要。`results/web/worker.json`には接続情報だけを保存する。起動中のプロセス情報は一時フォルダのSQLiteで共有して重複起動を防ぐ。起動失敗時のログの場所はエラーに表示する。
 
 ## オフライン用に既存Plotを出力する
 
@@ -127,7 +114,7 @@ pnpm preview "path/to/project" 8732
 
 各Keyの型で使えるクエリを表示する。固定条件はANDで評価し、各パラメータの候補はその固定条件だけから取得する。スライダーは保存済み候補を動かし、存在しない中間値を作らない。他のパラメータを動かしても候補や現在値は変えない。同じ条件の操作方法を切り替えたときは値を引き継ぐ。
 
-テーブルはグラフの下に配置し、Fixedの結果をページ単位で表示する。並べ替え・昇降順・表示切り替えに対応。行をクリックするとPlotを描画し、すべての一致パラメータをその行の値へ同期する。範囲などの条件は保持し、選んだ行が条件を満たさない場合は「条件外」と表示する。一致が1件なら自動選択し、複数件では先頭を勝手に選ばない。
+テーブルはグラフの下に配置し、Fixedの結果をページ単位で表示する。並べ替え・昇降順・表示切り替えに対応。行をクリックするとPlotを描画し、すべての一致パラメータをその行の値へ同期する。範囲などの条件は保持する。一致が1件なら自動選択し、複数件では先頭を勝手に選ばない。
 
 候補の複数選択は「すべて」と除外を扱い、候補が多い場合はページを移動できる。配列Keyも保存値を候補から選択できる。「この結果について質問」は、選択したScheme・RowId・Plot・条件と質問を右側の下書き欄へ渡す。
 
@@ -137,11 +124,13 @@ pnpm preview "path/to/project" 8732
 
 | ツール | 用途 |
 | --- | --- |
-| `list_schemes` | Scheme・Key・Value・登録済みPlot・件数を列挙し、閲覧画面を開く |
+| `open_browser` | 明示的に閲覧画面を開く。既に開いている画面はそのまま使う |
+| `list_schemes` | Scheme・Key・Value・登録済みPlot・件数を列挙する |
 | `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
 | `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
-| `render_plot` | 既存MATLABでPlotを実行し、PNGとHTML・Plotly JSONへのresource linkを返す。接続がなければ保存済み出力を使う |
+| `render_plot` | 共有の描画専用MATLABでPlotを実行し、PNGとHTML・Plotly JSONへのresource linkを返す。有効な保存済み出力も使える |
+| `annotate_plot` | 指定したPlotの点ラベル・縦線・横線を設定する。同じ閲覧画面に反映し、空配列でAI注釈を消す |
 
 検索例:
 
@@ -185,8 +174,8 @@ HTTPでのローカル接続は`node server.ts "path/to/project" --http 8732`。
 
 `.codex-plugin/plugin.json`とルートの`.mcp.json`、`skills/`が一つのPluginパッケージになる。
 CodexのMCP起動待ち時間を同梱するため、[公式に対応しているCodex形式](https://developers.openai.com/plugins/build/plugins)を使う。
-`list_schemes`にサイドバーと会話パネルのentrypointを宣言し、`ui://result-store/browser.html`を
-MCP Apps UIとして提供する。
+`open_browser`だけにサイドバーと会話パネルのentrypointと`ui://result-store/browser.html`を宣言する。
+通常の検索・配列取得・`render_plot`はMCP Apps UIを開かない。閲覧画面は明示的に開き、既に開いている画面を使い回す。
 
 保存先はセットアップ用Skillが設定する。手動で設定する場合は、インストール先で次を実行する。
 
@@ -206,6 +195,21 @@ node setup.mjs "path/to/project"
 反映されない。Marketplaceの更新・Pluginの再インストールを使う。
 
 Plotヘッダーの「コンテキストに追加」を押すと、その時点の結果のメタデータとPNGを`ui/update-model-context`で渡す。閲覧・Sweep・選択解除ではコンテキストを変更せず、PNGも生成しない。質問ボタンは現在の図をコンテキストに追加してから、`openai/message`の`send: false`で会話の下書きを作る。[公式のExtension仕様](https://developers.openai.com/plugins/build/extensions)に沿った実装。
+
+AIの注釈は`annotate_plot`に一覧を渡して設定する。座標はデータの単位で、`xaxis`・`yaxis`はPlotlyの軸名（`x`・`y`、`x2`・`y2`など）を指定する。省略時は`x`・`y`。一覧全体を置き換え、`annotations: []`でAI注釈を消す。元のPlot関数の注釈は保持する。
+
+```json
+{
+  "scheme": "waveform", "row_id": "1", "plot_index": 1,
+  "annotations": [
+    { "type": "point_label", "x": 0, "y": 1, "text": "ピーク" },
+    { "type": "xline", "x": 0, "text": "中心" },
+    { "type": "yline", "y": 0.5, "text": "比較基準" }
+  ]
+}
+```
+
+注釈は`results/web/annotations/`のJSONに保存し、同じ画面が1秒ごとに変更を確認して注釈だけを更新する。Scheme・RowId・Plotごとに分かれ、元の保存データが差し替わった場合は古い注釈を適用しない。HTML・Plotly JSONと「コンテキストに追加」の画像には注釈が入る。`render_plot`のPNGはMATLABの元図で、注釈一覧は`plot_annotations`に返す。
 
 Codex Appへのローカル導入は上記のMarketplaceを使う。ChatGPT側でリモートMCP接続を作る場合は
 [公式の接続手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)に従う。

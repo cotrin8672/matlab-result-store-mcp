@@ -5,7 +5,7 @@ const status = document.getElementById('status')!;
 async function start() {
   const client = new Client({ name: 'Result Store local preview', version: '0.1.0' });
   await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', location.href)));
-  const tool = (await client.listTools()).tools.find(t => t.name === 'list_schemes')!;
+  const tool = (await client.listTools()).tools.find(t => t.name === 'open_browser')!;
   const resource = await client.readResource({ uri: 'ui://result-store/browser.html' });
   const content = resource.contents.find(c => 'text' in c);
   if (!content || !('text' in content)) throw new Error('Missing browser resource.');
@@ -25,7 +25,7 @@ async function start() {
   };
   bridge.oninitialized = () => void (async () => {
     await bridge.sendToolInput({ arguments: {} });
-    await bridge.sendToolResult(await client.callTool({ name: 'list_schemes', arguments: {} }));
+    await bridge.sendToolResult(await client.callTool({ name: 'open_browser', arguments: {} }));
     status.textContent = 'MCPサーバーに接続済み';
   })().catch(error => { status.textContent = String(error); });
   await bridge.connect(new PostMessageTransport(frame.contentWindow!, frame.contentWindow!));
