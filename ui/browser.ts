@@ -26,13 +26,14 @@ const element = <T extends HTMLElement>(id: string) => document.getElementById(i
 const schemeSelect = element<HTMLSelectElement>('scheme'), plotSelect = element<HTMLSelectElement>('plot-choice');
 const status = element('status'), ask = element<HTMLButtonElement>('ask');
 const dialog = element<HTMLDialogElement>('picker-dialog');
+const compactLayout = matchMedia('(max-width:760px)');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
 let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
 let conditions: Condition[] = [];
 
-function showError(error: unknown) { status.textContent = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
-function note(text: string) { status.textContent = text; status.dataset.error = 'false'; }
+function showError(error: unknown) { status.textContent = status.title = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
+function note(text: string) { status.textContent = status.title = text; status.dataset.error = 'false'; }
 function data<T>(reply: CallToolResult): T {
   if (reply.isError) throw new Error(reply.content.filter(c => c.type === 'text').map(c => c.text).join('\n'));
   return reply.structuredContent as T;
@@ -119,6 +120,7 @@ async function changeCondition(c: Condition, key: Key, name: string) {
   c.key = key; c.definition = queriesFor(key.kind).find(q => q.name === name) ?? queriesFor(key.kind)[0];
   await refreshFixed(previousKey !== key || previous.op !== c.definition.op ? c.id : undefined);
 }
+function inlineParameter(c: Condition) { return compactLayout.matches && (c.definition.control === 'slider' || c.definition.control === 'range'); }
 function renderQueries() {
   element('filters').replaceChildren(...conditions.map(c => {
     const row = document.createElement('div'); row.className = 'query-row'; row.dataset.query = String(c.id);
@@ -131,17 +133,23 @@ function renderQueries() {
     const remove = button('×', () => { conditions = conditions.filter(v => v !== c); run(refreshFixed()); }, `Query ${c.id} を削除`);
     const editor = document.createElement('div'); editor.className = 'query-editor';
     if (c.definition.mode === 'Fixed') editor.append(makeEditor(c));
-    else { const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = currentText(c); editor.append(text); }
+    else {
+      if (inlineParameter(c)) { editor.classList.add('inline-parameter'); editor.append(makeEditor(c)); }
+      const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = currentText(c); editor.append(text);
+    }
     row.append(key, query, editor, remove); return row;
   }));
 }
 function renderParameters() {
-  element('parameters').replaceChildren(...conditions.filter(c => c.definition.mode === 'Parametric').map(c => {
+  const parameters = element('parameters');
+  parameters.replaceChildren(...conditions.filter(c => c.definition.mode === 'Parametric' && !inlineParameter(c)).map(c => {
     const row = document.createElement('div'); row.className = 'parameter'; row.dataset.parameter = String(c.id);
     const label = document.createElement('label'); label.textContent = c.key.name;
     row.append(label, makeEditor(c)); return row;
   }));
+  element('parameters-panel').hidden = compactLayout.matches && !parameters.childElementCount;
 }
+compactLayout.addEventListener('change', () => { if (catalog) { renderQueries(); renderParameters(); } });
 function sync(c: Condition) { const label = document.getElementById(`current-${c.id}`); if (label) label.textContent = currentText(c); c.sync?.(); }
 async function changed(c: Condition) {
   if (c.definition.mode === 'Fixed') await refreshFixed();
