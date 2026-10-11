@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Result Store — MCP Apps preview</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;background:#f5f5f5;color:#222;font:14px system-ui,sans-serif}header{padding:12px 18px;border-bottom:1px solid #ddd;background:white;display:flex;justify-content:space-between;gap:14px}main{display:grid;grid-template-columns:minmax(0,1fr) 280px;height:calc(100vh - 45px)}iframe{border:0;width:100%;height:100%;background:white}aside{padding:18px;overflow:auto;border-left:1px solid #ddd}h1{font-size:14px;margin:0}h2{font-size:13px;margin:0 0 10px}p{font-size:12px;color:#666;overflow-wrap:anywhere}textarea{width:100%;height:260px;resize:vertical;font:12px system-ui;line-height:1.7;border:1px solid #bbb;border-radius:8px;padding:10px}#context{white-space:pre-wrap;line-height:1.7}#status{margin:0}@media(max-width:900px){main{grid-template-columns:1fr;height:auto}iframe{height:1100px}aside{border:0}}
+  </style>
+</head>
+<body>
+  <header><h1>MCP Apps ローカルプレビュー</h1><p id="status" role="status">接続中…</p></header>
+  <main>
+    <iframe title="Result Store" sandbox="allow-scripts"></iframe>
+    <aside><h2>会話の下書き</h2><textarea id="draft" aria-label="会話の下書き" placeholder="アプリで結果を選び、質問ボタンを押してください。"></textarea><p>このプレビューは質問を表示するだけです。AIへの送信は行いません。</p><h2>モデルへ渡す選択情報</h2><p id="context">未選択</p></aside>
+  </main>
+  <script>/* host-script */</script>
+</body>
+</html>

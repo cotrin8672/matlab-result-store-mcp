@@ -1,0 +1,3 @@
+interface:
+  display_name: "MATLAB Result Store"
+  short_description: "MATLAB Result Storeの保存・検索・プロットを現行APIで扱う"
