@@ -347,7 +347,13 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (token !== request) return;
   let image = response.content.find(c => c.type === 'image');
   if (!image) {
-    const png = await Plotly.toImage(element('plot'), { format: 'png', width: 1100, height: 800 });
+    // Sandboxed hosts can block the blob URL used by Plotly's PNG export.
+    const preview = new Image();
+    preview.src = await Plotly.toImage(element('plot'), { format: 'svg', width: 1100, height: 800 });
+    await preview.decode();
+    const canvas = document.createElement('canvas'); canvas.width = 1100; canvas.height = 800;
+    canvas.getContext('2d')!.drawImage(preview, 0, 0, canvas.width, canvas.height);
+    const png = canvas.toDataURL('image/png');
     image = { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) };
   }
   if (token !== request) return;
