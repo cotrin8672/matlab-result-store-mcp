@@ -26,6 +26,8 @@ export function createServer(root: string): McpServer {
   const rowId = z.string().regex(/^[1-9]\d*$/).describe('RowId as a decimal string, from search_results.');
   const plotIndex = z.number().int().min(1).default(1).describe('Registered Plot index from list_schemes/get_result.');
   const scalar = z.union([z.number().finite(), z.string(), z.boolean()]);
+  const queryValue = z.union([scalar, z.null(), z.object({ candidate: rowId }).describe('Saved Key value from list_candidates, identified by a representative RowId. Preserves arrays and 64-bit integers exactly.')]);
+  const filters = z.array(z.object({ key: z.string(), op: z.enum(['eq', 'ne', 'gte', 'lte', 'between', 'in', 'not_in', 'contains', 'is_null', 'false']), value: z.union([queryValue, z.array(queryValue)]).optional() })).default([]);
   function result(data: Record<string, unknown>) {
     const safe = jsonSafe(data) as Record<string, unknown>;
     return { content: [{ type: 'text' as const, text: JSON.stringify(safe) }], structuredContent: safe };
@@ -49,15 +51,26 @@ export function createServer(root: string): McpServer {
   }, async () => result(store.listSchemes()));
 
   server.registerTool('search_results', {
-    description: 'Search saved results by scalar Key conditions (AND), returning RowIds and Keys without loading MAT payloads. NULL means an unknown historical Key. Array Key filters are not supported yet.',
+    description: 'Search saved results with AND conditions without loading MAT payloads. filters define the Fixed result table; optional parameters further restrict matched_total/first_match/selected_matches, as in the MATLAB GUI. Use list_candidates values for exact array Key comparisons. contains is case-sensitive. NULL means an unknown historical Key.',
     inputSchema: z.object({
       scheme,
-      filters: z.array(z.object({ key: z.string(), op: z.enum(['eq', 'ne', 'gte', 'lte', 'between', 'in', 'contains', 'is_null']), value: z.union([scalar, z.array(scalar)]).optional() })).max(30).default([]),
+      filters,
+      parameters: filters.describe('Parametric conditions. These affect match statistics, while rows/total remain the Fixed table.'),
+      selected_row_id: rowId.optional(),
       limit: z.number().int().min(1).max(100).default(25),
       offset: z.number().int().min(0).default(0),
       sort_key: z.string().default('RowId'), descending: z.boolean().default(false),
     }), annotations,
-  }, async a => result(store.search(a.scheme, a.filters, a.limit, a.offset, a.sort_key, a.descending)));
+  }, async a => result(store.search(a.scheme, a.filters, a.limit, a.offset, a.sort_key, a.descending, a.parameters, a.selected_row_id)));
+
+  server.registerTool('list_candidates', {
+    description: 'Read paginated distinct saved Key values after Fixed filters, sorted as in the MATLAB GUI (NULL last). No MAT payloads are loaded. Pass each returned value object directly to search_results for exact scalar/array equality or membership. ordered excludes NULL for range controls. locate returns each requested value and its zero-based candidate index; nearest snaps missing numeric values to the closest saved value.',
+    inputSchema: z.object({
+      scheme, key: z.string(), filters, ordered: z.boolean().default(false),
+      limit: z.number().int().min(1).max(100).default(25), offset: z.number().int().min(0).default(0),
+      locate: z.array(queryValue).default([]), nearest: z.boolean().default(false),
+    }), annotations,
+  }, async a => result(store.candidates(a.scheme, a.key, a.filters, a.ordered, a.limit, a.offset, a.locate, a.nearest)));
 
   server.registerTool('get_result', {
     description: 'Read one result and Value metadata from MATLAB v7.3/HDF5 without MATLAB. Arrays are returned only when named in include_values. Complex arrays have separate real/imag flat arrays, in MATLAB column-major order. Slice indices are ZERO-BASED in MATLAB dimension order; count is the number of elements per dimension. NaN/Inf and 64-bit integers are strings to preserve their meaning.',

@@ -58,7 +58,16 @@ resultstore.exportPlot("waveform", uint64(1), 1, root);
 pnpm preview "path/to/project" 8732
 ```
 
-`http://127.0.0.1:8732`を開く。Schemeを選び、条件を入力して検索し、RowIdを押すとPlotが表示される。「この結果について質問」は、選択したScheme・RowId・Plot・条件と質問を右側の下書き欄へ渡す。
+`http://127.0.0.1:8732`を開く。Schemeを選び、「＋ Query」でKeyとクエリを追加する。操作はMATLABの`query_browser`に合わせている。
+
+- Fixed: `isEqual`、`oneOf`、`between`、`atLeast`、`atMost`、`contains`。
+- Parameters: `sweepValue`、`selectValue`、`selectValues`、`chooseValues`、`sweepRange`、`setRange`、`sweepMinimum`、`setMinimum`、`sweepMaximum`、`setMaximum`、`searchText`。
+
+各Keyの型で使えるクエリを表示する。固定条件はANDで評価し、各パラメータの候補はその固定条件だけから取得する。スライダーは保存済み候補を動かし、存在しない中間値を作らない。他のパラメータを動かしても候補や現在値は変えない。同じ条件の操作方法を切り替えたときは値を引き継ぐ。
+
+テーブルはグラフの下に配置し、Fixedの結果をページ単位で表示する。並べ替え・昇降順・表示切り替えに対応。行をクリックするとPlotを描画し、すべての一致パラメータをその行の値へ同期する。範囲などの条件は保持し、選んだ行が条件を満たさない場合は「条件外」と表示する。一致が1件なら自動選択し、複数件では先頭を勝手に選ばない。
+
+候補の複数選択は「すべて」と除外を扱い、候補が多い場合はページを移動できる。配列Keyも保存値を候補から選択できる。「この結果について質問」は、選択したScheme・RowId・Plot・条件と質問を右側の下書き欄へ渡す。
 
 プレビューは実際のMCPクライアント、HTTPサーバー、MCP Appsの`AppBridge`を使用する。AIへの送信は行わない。
 
@@ -67,7 +76,8 @@ pnpm preview "path/to/project" 8732
 | ツール | 用途 |
 | --- | --- |
 | `list_schemes` | Scheme・Key・Value・登録済みPlot・件数を列挙し、閲覧画面を開く |
-| `search_results` | スカラーKeyによるAND条件検索。RowIdとKeyのみを返す |
+| `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
+| `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
 | `render_plot` | 元のMATLAB FigureのPNGと、変換済みHTML・Plotly JSONへのMCP resource linkを返す |
 
@@ -82,7 +92,11 @@ pnpm preview "path/to/project" 8732
 }
 ```
 
-条件は`eq`、`ne`、`gte`、`lte`、`between`、`in`、`contains`、`is_null`。RowIdは十進文字列。`get_result`の`include_values`は既定では空。配列はMATLABの列優先順、複素数は`real`/`imag`を分離する。部分取得の`slice.start`は0始まり、`count`は各次元の要素数。既定上限は4096、最大16384要素。NaN/Infと64bit整数は文字列で返す。
+条件は`eq`、`ne`、`gte`、`lte`、`between`、`in`、`not_in`、`contains`、`is_null`、`false`。`contains`は大文字・小文字を区別する。`filters`だけなら通常の検索。`parameters`を追加すると、`rows`と`total`はFixedの一覧を保ち、`matched_total`、`first_match`、`selected_matches`に両方の条件の評価結果を返す。
+
+`list_candidates`の`value`は、候補を代表する行の`{"candidate":"<RowId>"}`。同じScheme・Keyのフィルタへそのまま渡す。表示ラベルや小さい配列の表示値から再構成せず、SQLiteに保存された値を使うため、配列や64bit整数もそのまま比較できる。`ordered`は範囲操作向けにNULLを除き、`locate`は候補位置（0始まり）、`nearest`は最も近い保存値を取得する。候補取得・検索はSQLのWHERE・GROUP BY・LIMIT/OFFSETで行い、MAT本体を読み込まない。
+
+RowIdは十進文字列。`get_result`の`include_values`は既定では空。配列はMATLABの列優先順、複素数は`real`/`imag`を分離する。部分取得の`slice.start`は0始まり、`count`は各次元の要素数。既定上限は4096、最大16384要素。NaN/Infと64bit整数は文字列で返す。
 
 stdioで起動する場合:
 
@@ -124,7 +138,7 @@ ChatGPT側では、選択した結果のメタデータとPNGを`ui/update-model
 ## 現時点の範囲
 
 - Valueの読み出しは、v7.3 MATの密な数値・logical配列。struct/cellの展開は未対応。
-- 配列Keyは型・形状と小さい値を表示できるが、配列Keyによる絞り込みは未対応。
+- 配列Keyの一致・複数選択は`list_candidates`の保存値を使う。任意の配列を入力して作る操作はない。
 - 図は明示的に出力した登録済みPlotのみ。fig2plotlyが扱わない描画要素やMATLABのコールバックは移植しない。元のPNGを併せて確認できる。
 - 保存結果の計算・更新・削除を行うツールはない。
 
@@ -135,6 +149,6 @@ pnpm check
 pnpm build
 ```
 
-実データではPhCRの`waveform`を使用し、MAT読み出しの1024複素要素とMATLABの値の一致、元のFigureと変換後の4系列・軸範囲の一致、4つのMCPツール、HTML/JSON/UI resource、画面での選択・ズーム・質問の引き渡しを確認した。ChatGPT本体への接続確認は別途必要。
+実データではPhCRの`waveform`を使用し、MAT読み出しの1024複素要素とMATLABの値の一致、元のFigureと変換後の4系列・軸範囲の一致、HTML/JSON/UI resource、画面での選択・ズーム・質問の引き渡しを確認した。クエリは`scan_waveform`の実データでMATLABの`store.browse`と件数・行順・候補・配列の一致・除外・最近傍位置を比較した。ChatGPT本体への接続確認は別途必要。
 
 参考: [Pluginパッケージ仕様](https://developers.openai.com/plugins/build/plugins)、[MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps)、[Plotly MATLAB](https://github.com/plotly/plotly_matlab)。

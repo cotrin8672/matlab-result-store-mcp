@@ -2,7 +2,10 @@
 
 1. `list_schemes`で対象の保存先、Scheme、Key、Value、Plot、件数を確認する。
 2. `search_results`の`filters`に条件を指定し、比較対象のRowIdを確定する。
-   条件はAND。スカラーKeyの一致・範囲などに対応する。NULLは過去の不明な条件。
+   条件はAND。一致・複数選択・範囲・下限・上限・文字列の部分一致などに対応する。
+   `contains`は大文字・小文字を区別する。NULLは過去の不明な条件。
+   配列Keyは`list_candidates`から候補を取得し、返された`value`をそのままフィルタに渡す。
+   表示ラベルから配列を復元しない。`not_in`は「すべて」の候補から指定値を除外する。
 3. `get_result`で条件とValueの型・サイズを確認する。
 4. `render_plot`で登録済みPlotのPNGを見る。図の軸・単位・正規化を確かめて解釈する。
    インタラクティブ表示は、そのFigureをfig2plotlyで変換したもの。
@@ -23,4 +26,10 @@ MATLABセッションで`resultstore.exportCatalog(root)`または
 `store.m`を実行しない。未出力の図を見たと主張しない。
 
 現時点でValueの読み出しはv7.3 MATの密な数値・logical配列に対応する。
-struct/cellの展開と配列Keyによる絞り込みには未対応。対応外の値は推測で復元しない。
+struct/cellの展開には未対応。対応外の値は推測で復元しない。
+
+GUIはFixed条件でテーブルと各パラメータの候補を絞り、Parametersで一致する結果を選ぶ。
+`search_results`の`parameters`を使う場合、`rows`/`total`はFixedの一覧であり、両段の
+評価件数は`matched_total`。`first_match`は1件のときだけ自動選択に使う。複数件から
+勝手に先頭を選ばない。パラメータ間で候補を絞り合わないため、存在しない組み合わせは
+該当なしになる。行選択は一致パラメータを同期し、範囲条件は保持する。
