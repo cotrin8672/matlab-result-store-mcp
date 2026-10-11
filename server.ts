@@ -21,7 +21,7 @@ function plotHtml(plot: Plot) {
 export function createServer(root?: string): McpServer {
   let store: ResultStore | undefined;
   const getStore = () => store ??= new ResultStore(root ?? configuredRoot());
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.5' });
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.6' });
   const uiUri = 'ui://result-store/browser.html';
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const scheme = z.string().min(1).describe('Active Scheme ID from list_schemes.');
@@ -65,7 +65,7 @@ export function createServer(root?: string): McpServer {
     return { plot: JSON.parse(readFileSync(store.file(`${artifact.folder}/plot.json`), 'utf8')), payload: artifact.payload, plot_name: artifact.plot_name, htmlPath: artifact.html_path };
   }
 
-  registerAppResource(server, 'Results', uiUri, {}, async () => ({
+  registerAppResource(server, 'MatlabResults', uiUri, {}, async () => ({
     contents: [{ uri: uiUri, mimeType: RESOURCE_MIME_TYPE,
       text: readFileSync(new URL('./dist/browser.html', import.meta.url), 'utf8'),
       _meta: {
@@ -76,7 +76,7 @@ export function createServer(root?: string): McpServer {
   }));
 
   registerAppTool(server, 'open_browser', {
-    title: 'Results',
+    title: 'MatlabResults',
     description: 'Open the graphical Result Store browser only when the user asks to open it. Reuse an already open browser instead of opening another. For data or Plot retrieval use list_schemes, search_results, get_result and render_plot, which do not open a browser.',
     inputSchema: z.object({}), annotations,
     _meta: { ui: { resourceUri: uiUri, visibility: ['app', 'model'] }, 'openai/ui': { entrypoints: [{ type: 'global' }, { type: 'thread' }] } },

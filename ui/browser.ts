@@ -22,7 +22,7 @@ declare const Plotly: {
 };
 declare const MathJax: { startup: { promise: Promise<void> } };
 
-const app = new App({ name: 'Result Store browser', version: '0.1.0' }, { availableDisplayModes: ['inline', 'fullscreen'] }, { autoResize: false });
+const app = new App({ name: 'MatlabResults', version: '0.1.0' }, { availableDisplayModes: ['inline', 'fullscreen'] }, { autoResize: false });
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const schemeSelect = element<HTMLSelectElement>('scheme'), plotSelect = element<HTMLSelectElement>('plot-choice');
 const status = element('status'), ask = element<HTMLButtonElement>('ask'), addContextButton = element<HTMLButtonElement>('add-context');
