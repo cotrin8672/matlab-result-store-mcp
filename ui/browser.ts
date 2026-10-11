@@ -132,7 +132,7 @@ function renderQueries() {
     const editor = document.createElement('div'); editor.className = 'query-editor';
     if (c.definition.mode === 'Fixed') editor.append(makeEditor(c));
     else { const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = currentText(c); editor.append(text); }
-    row.append(key, query, remove, editor); return row;
+    row.append(key, query, editor, remove); return row;
   }));
 }
 function renderParameters() {
