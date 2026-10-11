@@ -24,7 +24,7 @@ declare const MathJax: { startup: { promise: Promise<void> } };
 const app = new App({ name: 'Result Store browser', version: '0.1.0' }, { availableDisplayModes: ['inline', 'fullscreen'] }, { autoResize: false });
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const schemeSelect = element<HTMLSelectElement>('scheme'), plotSelect = element<HTMLSelectElement>('plot-choice');
-const status = element('status'), ask = element<HTMLButtonElement>('ask');
+const status = element('status'), ask = element<HTMLButtonElement>('ask'), addContextButton = element<HTMLButtonElement>('add-context');
 const dialog = element<HTMLDialogElement>('picker-dialog');
 const compactLayout = matchMedia('(max-width:760px)');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
@@ -312,11 +312,10 @@ async function selectRow(rowId: string, reply?: CallToolResult) {
   renderQueries(); renderParameters(); await evaluate(token, rowId, reply);
 }
 async function clearPlot() {
-  selected = undefined; renderedPlot = undefined; ask.disabled = true; Plotly.purge(element('plot')); element('details').textContent = '';
-  await app.updateModelContext({ content: [], structuredContent: {} });
+  selected = undefined; renderedPlot = undefined; ask.disabled = addContextButton.disabled = true; Plotly.purge(element('plot')); element('details').textContent = '';
 }
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
-  ask.disabled = true;
+  ask.disabled = addContextButton.disabled = true;
   const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
   plotQueue = task.catch(() => {});
   try { await task; }
@@ -353,8 +352,12 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   }
   renderedPlot = next;
   if (token !== request) return;
-  let image = response.content.find(c => c.type === 'image');
-  if (!image) {
+  selected = artifact; ask.disabled = addContextButton.disabled = false; note('');
+}
+async function addContext() {
+  const artifact = selected; if (!artifact) return;
+  const task = plotQueue.then(async () => {
+    if (selected !== artifact) return;
     // Sandboxed hosts can block the blob URL used by Plotly's PNG export.
     const preview = new Image();
     preview.src = await Plotly.toImage(element('plot'), { format: 'svg', width: 1100, height: 800 });
@@ -362,12 +365,12 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
     const canvas = document.createElement('canvas'); canvas.width = 1100; canvas.height = 800;
     canvas.getContext('2d')!.drawImage(preview, 0, 0, canvas.width, canvas.height);
     const png = canvas.toDataURL('image/png');
-    image = { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) };
-  }
-  if (token !== request) return;
-  selected = artifact;
-  await app.updateModelContext({ content: [{ type: 'text', text: `選択した保存結果: ${JSON.stringify(artifact)}` }, ...(image ? [image] : [])], structuredContent: { selection: artifact } });
-  if (token !== request) return; ask.disabled = false; note('');
+    await app.updateModelContext({ content: [{ type: 'text', text: `選択した保存結果: ${JSON.stringify(artifact)}` },
+      { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) }], structuredContent: { selection: artifact } });
+    note('コンテキストに追加しました。'); return artifact;
+  });
+  plotQueue = task.catch(() => {});
+  return task;
 }
 async function accept(reply: CallToolResult) {
   const payload = data<Partial<Catalog & Artifact>>(reply);
@@ -401,10 +404,11 @@ element('next').onclick = () => { offset += 25; run(evaluate(++request)); };
 element<HTMLSelectElement>('sort').onchange = () => { offset = 0; run(evaluate(++request)); };
 element('direction').onclick = () => { element('direction').textContent = element('direction').textContent === '↑' ? '↓' : '↑'; offset = 0; run(evaluate(++request)); };
 element('toggle-table').onclick = () => { const hidden = element('main').classList.toggle('table-hidden'); element('table-wrap').hidden = hidden; element('pages').hidden = hidden; element('toggle-table').textContent = hidden ? 'Tableを表示' : 'Tableを隠す'; };
+addContextButton.onclick = () => run(addContext());
 ask.onclick = () => run((async () => {
-  if (!selected) return;
+  const artifact = await addContext(); if (!artifact) return;
   const question = element<HTMLTextAreaElement>('question').value.trim() || 'この結果の特徴を説明して。';
-  const text = `${question}\n\nScheme: ${selected.scheme}\nRowId: ${selected.row_id}\nPlot: ${selected.plot_name}\n条件: ${JSON.stringify(selected.keys)}`;
+  const text = `${question}\n\nScheme: ${artifact.scheme}\nRowId: ${artifact.row_id}\nPlot: ${artifact.plot_name}\n条件: ${JSON.stringify(artifact.keys)}`;
   const message = { role: 'user' as const, content: [{ type: 'text' as const, text }], _meta: { 'openai/message': { send: false } } };
   const response = await app.sendMessage(message); if (response.isError) throw new Error('会話に渡せませんでした。'); note('選択した結果を会話に渡しました。');
 })());

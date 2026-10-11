@@ -205,7 +205,7 @@ node setup.mjs "path/to/project"
 ローカルPluginをキャッシュへコピーするホストでは、元のチェックアウトを更新しただけでは
 反映されない。Marketplaceの更新・Pluginの再インストールを使う。
 
-ChatGPT側では、選択した結果のメタデータとPNGを`ui/update-model-context`で渡し、質問ボタンは`openai/message`の`send: false`で会話の下書きを作る。[公式のExtension仕様](https://developers.openai.com/plugins/build/extensions)に沿った実装。
+Plotヘッダーの「コンテキストに追加」を押すと、その時点の結果のメタデータとPNGを`ui/update-model-context`で渡す。閲覧・Sweep・選択解除ではコンテキストを変更せず、PNGも生成しない。質問ボタンは現在の図をコンテキストに追加してから、`openai/message`の`send: false`で会話の下書きを作る。[公式のExtension仕様](https://developers.openai.com/plugins/build/extensions)に沿った実装。
 
 Codex Appへのローカル導入は上記のMarketplaceを使う。ChatGPT側でリモートMCP接続を作る場合は
 [公式の接続手順](https://developers.openai.com/plugins/deploy/connect-chatgpt)に従う。

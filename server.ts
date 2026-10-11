@@ -20,7 +20,7 @@ function plotHtml(plot: Plot) {
 export function createServer(root?: string): McpServer {
   let store: ResultStore | undefined;
   const getStore = () => store ??= new ResultStore(root ?? configuredRoot());
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.3' });
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.2.4' });
   const uiUri = 'ui://result-store/browser.html';
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const scheme = z.string().min(1).describe('Active Scheme ID from list_schemes.');
