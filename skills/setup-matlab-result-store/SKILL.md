@@ -23,7 +23,7 @@ description: Set up the installed MATLAB Result Store plugin, prepare its depend
 5. 出力された保存先・Schemeと件数を確認し、完了を伝える。MCPツールが利用できる場合は
    `list_schemes`でも同じ保存先を確認する。まだツールが読み込まれていない場合や保存先を
    切り替えた場合は、新しいチャットでPluginを使うよう案内する。
-6. 図の描画には`matlab`がPATH上に必要。MCPが描画専用MATLABを保存先ごとに1つだけ
+6. 図の初回描画と解析には`matlab`がPATH上に必要。MCPが専用MATLABを保存先ごとに1つだけ
    自動起動して共有する。計算用セッションで`resultstore.connect`を実行する必要はない。
    フレームワークの`common`は保存先の祖先から自動検出する。別の場所にある場合は
    MATLAB標準の`MATLABPATH`に追加する。solverや`store.m`は実行しない。
@@ -33,6 +33,7 @@ description: Set up the installed MATLAB Result Store plugin, prepare its depend
 `PLUGIN_DATA`内の設定がない場合も、通常の個人用設定を読む。Plugin更新後も同じ設定を
 読める。`RESULT_STORE_ROOT`や起動引数を指定した場合はそちらが優先される。
 
-描画専用プロセス以外のMATLABを追加起動しない。保存データの作成・変更は行わない。
+セットアップでは共有のMCP用プロセス以外のMATLABを追加起動せず、保存データを変更しない。
+解析時は通常backgroundPoolを使う。プロセスworkerを明示的に選ぶ場合だけParallel Computing Toolboxと追加のworkerが必要。
 Plot未出力はセットアップ失敗ではない。通常は共有の描画専用プロセスで描画する。
 オフライン閲覧やライブ描画の対応外の図には`resultstore.exportCatalog` / `resultstore.exportPlot`を使える。

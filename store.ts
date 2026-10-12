@@ -244,48 +244,9 @@ export class ResultStore {
     if (selection && !include.length) throw new Error('A slice requires include_values.');
     const row = this.record(scheme, rowId);
     const catalog = this.catalog();
-    await h5.ready;
-    const file = new h5.File(this.file(String(row.__store_payload)), 'r');
-    try {
-      const values = Object.fromEntries(scheme.values.map(name => {
-        const item = file.get(name);
-        if (!(item instanceof h5.Dataset)) return [name, { supported: false, reason: 'Only numeric/logical datasets are supported.' }];
-        const matlabClass = item.attrs.MATLAB_class?.value;
-        const compound = Array.isArray(item.dtype) ? item.dtype : [];
-        const complex = compound.length === 2 && compound[0][0] === 'real' && compound[1][0] === 'imag';
-        const supported = /^(double|single|logical|u?int(8|16|32|64))$/.test(String(matlabClass)) && (typeof item.dtype === 'string' || complex);
-        const empty = item.attrs.MATLAB_empty?.value !== undefined;
-        const shape = empty ? Array.from(item.value as ArrayLike<number>, Number) : [...(item.shape ?? [])].reverse();
-        let count = shape;
-        let ranges: [number, number][] | undefined;
-        if (selection && include.includes(name)) {
-          if (selection.start.length !== shape.length || selection.count.length !== shape.length) throw new Error(`Slice rank must match MATLAB shape of ${name}.`);
-          count = selection.count;
-          ranges = selection.start.map((start, i): [number, number] => {
-            if (start + count[i] > shape[i]) throw new Error(`Slice exceeds MATLAB shape of ${name}.`);
-            return [start, start + count[i]];
-          }).reverse();
-        }
-        const elements = count.reduce((a, b) => a * b, 1);
-        const info: Record<string, unknown> = { class: matlabClass, shape, complex, supported, order: 'column-major' };
-        if (include.includes(name)) {
-          if (!supported) throw new Error(`Value ${name} is not a supported numeric/logical dataset.`);
-          if (elements > maxElements) throw new Error(`${name} has ${elements} selected elements; request a slice or raise max_elements (maximum 16384).`);
-          const raw = empty ? [] : ranges ? item.slice(ranges) : item.value;
-          if (complex) {
-            const pairs = raw as number[][];
-            info.data = { real: jsonSafe(pairs.map(p => p[0])), imag: jsonSafe(pairs.map(p => p[1])) };
-          } else if (matlabClass === 'logical') {
-            info.data = Array.from(raw as ArrayLike<number>, Boolean);
-          } else info.data = jsonSafe(raw);
-          info.selected_shape = count;
-          if (selection) info.start = selection.start;
-        }
-        return [name, info];
-      }));
-      return { scheme: id, ...this.row(scheme, row), payload: String(row.__store_payload), plot_catalog: catalog.status,
-        plots: catalog.status === 'ready' ? catalog.entries.find(s => s.id === id)?.plots ?? [] : null, values };
-    } finally { file.close(); }
+    const values = await readMatValues(this.file(String(row.__store_payload)), scheme.values, include, selection, maxElements);
+    return { scheme: id, ...this.row(scheme, row), payload: String(row.__store_payload), plot_catalog: catalog.status,
+      plots: catalog.status === 'ready' ? catalog.entries.find(s => s.id === id)?.plots ?? [] : null, values };
   }
 
   plotArtifact(id: string, rowId: string, plotIndex: number) {
@@ -306,4 +267,49 @@ export class ResultStore {
     }
     return { ...manifest, ...this.row(scheme, row), folder, html_path: this.file(`${folder}/plot.html`) };
   }
+}
+
+export async function readMatValues(filename: string, names: string[], include: string[], selection: Selection | undefined, maxElements: number) {
+  for (const name of include) if (!names.includes(name)) throw new Error(`Unknown Value: ${name}`);
+  if (selection && !include.length) throw new Error('A slice requires include_values.');
+  await h5.ready;
+  const file = new h5.File(filename, 'r');
+  try {
+    return Object.fromEntries(names.map(name => {
+      const item = file.get(name);
+      if (!(item instanceof h5.Dataset)) return [name, { supported: false, reason: 'Only numeric/logical datasets are supported.' }];
+      const matlabClass = item.attrs.MATLAB_class?.value;
+      const compound = Array.isArray(item.dtype) ? item.dtype : [];
+      const complex = compound.length === 2 && compound[0][0] === 'real' && compound[1][0] === 'imag';
+      const supported = /^(double|single|logical|u?int(8|16|32|64))$/.test(String(matlabClass)) && (typeof item.dtype === 'string' || complex);
+      const empty = item.attrs.MATLAB_empty?.value !== undefined;
+      const shape = empty ? Array.from(item.value as ArrayLike<number>, Number) : [...(item.shape ?? [])].reverse();
+      let count = shape;
+      let ranges: [number, number][] | undefined;
+      if (selection && include.includes(name)) {
+        if (selection.start.length !== shape.length || selection.count.length !== shape.length) throw new Error(`Slice rank must match MATLAB shape of ${name}.`);
+        count = selection.count;
+        ranges = selection.start.map((start, i): [number, number] => {
+          if (start + count[i] > shape[i]) throw new Error(`Slice exceeds MATLAB shape of ${name}.`);
+          return [start, start + count[i]];
+        }).reverse();
+      }
+      const elements = count.reduce((a, b) => a * b, 1);
+      const info: Record<string, unknown> = { class: matlabClass, shape, complex, supported, order: 'column-major' };
+      if (include.includes(name)) {
+        if (!supported) throw new Error(`Value ${name} is not a supported numeric/logical dataset.`);
+        if (elements > maxElements) throw new Error(`${name} has ${elements} selected elements; request a slice or raise max_elements (maximum 16384).`);
+        const raw = empty ? [] : ranges ? item.slice(ranges) : item.value;
+        if (complex) {
+          const pairs = raw as number[][];
+          info.data = { real: jsonSafe(pairs.map(p => p[0])), imag: jsonSafe(pairs.map(p => p[1])) };
+        } else if (matlabClass === 'logical') {
+          info.data = Array.from(raw as ArrayLike<number>, Boolean);
+        } else info.data = jsonSafe(raw);
+        info.selected_shape = count;
+        if (selection) info.start = selection.start;
+      }
+      return [name, info];
+    }));
+  } finally { file.close(); }
 }

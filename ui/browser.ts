@@ -1,7 +1,7 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
-import { annotationLayout, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
+import { themedPlotLayout, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
 import type { BrowserSelection, BrowserState } from '../browser.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
@@ -9,7 +9,7 @@ type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots:
 type Catalog = { schemes: Scheme[]; plot_catalog: string };
 type Row = { row_id: string; keys: Record<string, unknown>; key_labels: Record<string, string> };
 type Page = { rows: Row[]; total: number; matched_total: number; first_match: string | null; selected_matches: boolean };
-type Artifact = Row & { scheme: string; plot_index: number; plot_name: string; plotly_uri: string; annotations_uri: string; payload: string };
+type Artifact = Row & { scheme: string; plot_index: number; plot_name: string; plotly_uri: string; annotations_uri: string; payload: string; revision?: string };
 type Condition = { id: number; key: Key; definition: QueryDefinition; values: QueryValue[]; all: boolean;
   total: number; domain: Candidate[]; domainFilters: Filter[]; known: Map<string, Candidate>; positions: number[]; sync?: () => void };
 declare const Plotly: {
@@ -32,11 +32,16 @@ const compactLayout = matchMedia('(max-width:760px)');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
 let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
-let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, updatesPending = false, browserRevision = '';
+let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, updatesPending = false, browserRevision = '', plotColors = '';
 let conditions: Condition[] = [];
 
 function showError(error: unknown) { status.textContent = status.title = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
 function note(text: string) { status.textContent = status.title = text; status.dataset.error = 'false'; }
+function themeColors() {
+  const style = getComputedStyle(document.documentElement);
+  return { background: style.backgroundColor, text: style.color,
+    grid: style.getPropertyValue('--color-border-secondary').trim() || (style.colorScheme === 'dark' ? '#ffffff29' : '#0000001f') };
+}
 function data<T>(reply: CallToolResult): T {
   if (reply.isError) throw new Error(reply.content.filter(c => c.type === 'text').map(c => c.text).join('\n'));
   return reply.structuredContent as T;
@@ -349,7 +354,10 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   const next = applyPlotUpdate(renderedPlot, update);
   if (update.plot) {
     delete next.plot.layout.width; delete next.plot.layout.height; next.plot.layout.autosize = true;
-    await Plotly.react(element('plot'), next.plot.data, next.plot.layout, { responsive: true, displaylogo: false, showLink: false });
+    const colors = themeColors();
+    const layout = { ...next.plot.layout, paper_bgcolor: colors.background, plot_bgcolor: colors.background,
+      font: { ...(next.plot.layout.font as object), color: colors.text } };
+    await Plotly.react(element('plot'), next.plot.data, layout, { responsive: true, displaylogo: false, showLink: false });
     if (next.plot.frames?.length) await Plotly.addFrames(element('plot'), next.plot.frames);
   } else {
     const traces = update.traces ?? [], fields = new Set(traces.flatMap(trace => Object.keys(trace.values)));
@@ -368,11 +376,15 @@ async function refreshAnnotations(force = false) {
   const content = resource.contents.find(c => 'text' in c);
   if (!content || !('text' in content)) throw new Error('Plotの注釈を読み取れませんでした。');
   const saved = JSON.parse(content.text) as PlotAnnotations;
-  if (selected !== artifact || !renderedPlot || (!force && saved.revision === plotAnnotations.revision)) return;
-  await Plotly.relayout(element('plot'), annotationLayout(renderedPlot.plot, saved.annotations));
-  plotAnnotations = saved;
+  const colors = themeColors();
+  const signature = JSON.stringify(colors);
+  if (selected !== artifact || !renderedPlot || (!force && saved.revision === plotAnnotations.revision && signature === plotColors)) return;
+  await Plotly.relayout(element('plot'), themedPlotLayout(renderedPlot.plot, saved.annotations, colors));
+  plotAnnotations = saved; plotColors = signature;
 }
 async function showSelection(selection: BrowserSelection, reply?: CallToolResult) {
+  if (selected?.scheme === selection.scheme && selected.row_id === selection.row_id && selected.plot_index === selection.plot_index &&
+      (reply?.structuredContent as Partial<Artifact> | undefined)?.revision === renderedPlot?.revision && renderedPlot?.revision) return;
   if (!catalog?.schemes.some(s => s.id === selection.scheme && s.plots?.some(p => p.index === selection.plot_index)))
     await accept(await app.callServerTool({ name: 'list_schemes', arguments: {} }));
   if (currentScheme().id !== selection.scheme) changeScheme(selection.scheme);
@@ -388,8 +400,10 @@ async function refreshBrowser() {
   if (state.revision === browserRevision) return false;
   if (token !== request) return false;
   const samePlot = state.selection && selected?.scheme === state.selection.scheme && selected.row_id === state.selection.row_id && selected.plot_index === state.selection.plot_index;
-  if (state.selection && !(state.kind === 'annotations' && samePlot)) await showSelection(state.selection);
-  browserRevision = state.revision; return !(state.kind === 'annotations' && samePlot);
+  const unchanged = samePlot && (state.kind === 'annotations' || state.plot_revision === renderedPlot?.revision);
+  if (state.selection && !unchanged) await showSelection(state.selection);
+  browserRevision = state.revision;
+  return !unchanged;
 }
 async function addContext() {
   const artifact = selected; if (!artifact) return;
@@ -451,7 +465,13 @@ ask.onclick = () => run((async () => {
 })());
 let resizeFrame = 0;
 new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { if (selected) void Plotly.Plots.resize(element('plot')); }); }).observe(element('plot'));
-function theme(context: ReturnType<App['getHostContext']>) { if (context?.theme) applyDocumentTheme(context.theme); if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables); }
+function theme(context: ReturnType<App['getHostContext']>) {
+  if (context?.theme) applyDocumentTheme(context.theme);
+  if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables);
+  if (selected) {
+    const task = plotQueue.then(() => refreshAnnotations()); plotQueue = task.catch(() => {}); run(task);
+  }
+}
 app.addEventListener('hostcontextchanged', theme); app.ontoolresult = reply => run(accept(reply)); await app.connect(); theme(app.getHostContext());
 setInterval(() => {
   if (document.hidden || !catalog || updatesPending) return;

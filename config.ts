@@ -14,7 +14,9 @@ export function configFile(): string {
   return process.env.PLUGIN_DATA ? path.join(process.env.PLUGIN_DATA, 'store.local.json') : userConfigFile();
 }
 
-export function configuredRoot(): string {
+export function configuredRoot(): string;
+export function configuredRoot(optional: true): string | undefined;
+export function configuredRoot(optional = false): string | undefined {
   const arg = process.argv[2];
   if (arg && !arg.startsWith('--')) return arg;
   if (process.env.RESULT_STORE_ROOT) return process.env.RESULT_STORE_ROOT;
@@ -24,5 +26,5 @@ export function configuredRoot(): string {
     if (typeof root !== 'string' || !root.trim()) throw new Error(`Invalid Store root in ${file}.`);
     return root;
   }
-  throw new Error('Store folder is not configured. Run the MATLAB Result Store setup skill and choose a folder containing results/store.sqlite.');
+  if (!optional) throw new Error('Store folder is not configured. Run the MATLAB Result Store setup skill and choose a folder containing results/store.sqlite.');
 }

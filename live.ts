@@ -6,9 +6,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { applyPlotUpdate, type PlotState, type PlotUpdate } from './plots.ts';
 import { ensureWorker, running } from './worker.ts';
 
-type Session = { version: number; folder: string; token: string; pid: number };
+type Session = { version: number; folder: string; token: string; pid: number; jobs?: boolean };
 type Reply = { error?: string; payload: string; plot_name: string; update: PlotUpdate; preview?: string; timings: Record<string, number> };
-type Saved = Reply & PlotState & { scheme: string; row_id: string; plot_index: number };
+export type Saved = Reply & PlotState & { scheme: string; row_id: string; plot_index: number };
 
 export class LivePlots {
   readonly root: string;
@@ -42,6 +42,20 @@ export class LivePlots {
     await task;
   }
 
+  async submitJob(args: Record<string, unknown>) {
+    let session = await this.session();
+    if (!session) throw new Error('MATLAB worker is unavailable.');
+    if (!session.jobs) {
+      // The old MCP-owned Plot worker has no Job handler; replace it once on upgrade.
+      try { process.kill(session.pid); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      session = await ensureWorker(this.root, async () => {
+        const next = await this.readSession(); return next?.jobs ? next : undefined;
+      });
+    }
+    return this.send<{ error?: string }>(session, { operation: 'job', ...args });
+  }
+
   private async send<T extends { error?: string }>(session: Session, args: Record<string, unknown>): Promise<T> {
     const id = randomUUID(), request = path.join(session.folder, `${id}.request.json`), response = path.join(session.folder, `${id}.response.json`);
     const temporary = request + '.tmp', started = performance.now();
@@ -53,7 +67,7 @@ export class LivePlots {
       for (;;) {
         try { reply = JSON.parse(await readFile(response, 'utf8')); received = true; break; }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-        if (performance.now() - started > 30000) throw new Error('The Plot worker did not respond within 30 seconds.');
+        if (performance.now() - started > 30000) throw new DOMException('The Plot worker did not respond within 30 seconds.', 'TimeoutError');
         await delay(15);
       }
       if (reply.error) throw new Error(reply.error);

@@ -1,20 +1,20 @@
 {
   "name": "matlab-result-store",
-  "version": "0.2.7",
-  "description": "Search MATLAB Result Store results and discuss interactive plots with their saved conditions.",
+  "version": "0.3.0",
+  "description": "Search MATLAB results, discuss cached interactive plots, and run asynchronous MATLAB analysis.",
   "author": { "name": "cotrin8672" },
   "repository": "https://github.com/cotrin8672/matlab-result-store-mcp",
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "MATLAB Result Store",
-    "shortDescription": "保存結果を検索し、図を見ながら会話する",
-    "longDescription": "保存済みのMATLAB Result Storeを検索・閲覧する。セットアップで保存フォルダを指定する。Node.js 24以上とpnpmまたはnpmを使用する。",
+    "shortDescription": "保存結果の検索・描画とMATLABでの非同期解析",
+    "longDescription": "保存済みのMATLAB Result Storeを検索・閲覧し、backgroundPoolまたはプロセスworkerで解析する。セットアップで保存フォルダを指定する。Node.js 24以上とpnpmまたはnpmを使用する。",
     "developerName": "cotrin8672",
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/icon.svg",
     "category": "Productivity",
-    "capabilities": ["Read", "Plot annotations"]
+    "capabilities": ["Read", "Plot annotations", "MATLAB execution", "Completion events"]
   },
   "extensions": {
     "com.openai": {

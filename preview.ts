@@ -10,6 +10,11 @@ const host = localhostHostValidation(), origin = localhostOriginValidation();
 createServer(async (req, res) => {
   if (!host(req, res) || !origin(req, res)) return;
   if (req.url === '/mcp') { await handler(req, res); return; }
+  if (req.url === '/assets/icon.svg' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+    res.end(readFileSync(new URL('./assets/icon.svg', import.meta.url)));
+    return;
+  }
   if (req.url === '/' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(readFileSync(new URL('./dist/preview.html', import.meta.url)));

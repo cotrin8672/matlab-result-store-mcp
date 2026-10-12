@@ -43,6 +43,28 @@ export function validateAnnotations(plot: Plot, items: PlotAnnotation[]) {
   }
 }
 
+export function themedPlotLayout(plot: Plot, items: PlotAnnotation[], colors: { background: string; text: string; grid: string }) {
+  const annotated = annotationLayout(plot, items);
+  const layout: Record<string, unknown> = { ...annotated, paper_bgcolor: colors.background, plot_bgcolor: colors.background,
+    'font.color': colors.text, 'title.font.color': colors.text, 'hoverlabel.bgcolor': colors.background, 'hoverlabel.font.color': colors.text,
+    annotations: annotated.annotations.map(item => String(item.name ?? '').startsWith('result-store-ai-') ? item
+      : { ...item, font: { ...(item.font as object), color: colors.text } }) };
+  for (const name of Object.keys(plot.layout)) {
+    if (/^[xy]axis\d*$/.test(name)) {
+      for (const field of ['color', 'linecolor', 'tickcolor', 'tickfont.color', 'title.font.color']) layout[`${name}.${field}`] = colors.text;
+      for (const field of ['gridcolor', 'zerolinecolor']) layout[`${name}.${field}`] = colors.grid;
+    } else if (/^legend\d*$/.test(name)) {
+      layout[`${name}.bgcolor`] = colors.background;
+      layout[`${name}.font.color`] = colors.text;
+      layout[`${name}.title.font.color`] = colors.text;
+    } else if (/^coloraxis\d*$/.test(name)) {
+      layout[`${name}.colorbar.bgcolor`] = colors.background;
+      for (const field of ['tickcolor', 'tickfont.color', 'title.font.color', 'outlinecolor']) layout[`${name}.colorbar.${field}`] = colors.text;
+    }
+  }
+  return layout;
+}
+
 export function applyPlotUpdate(current: PlotState | undefined, update: PlotUpdate): PlotState {
   if (update.plot) return { revision: update.revision, plot: update.plot };
   if (!current || current.revision !== update.base_revision) throw new Error('Plot revision changed; request a full Plot.');

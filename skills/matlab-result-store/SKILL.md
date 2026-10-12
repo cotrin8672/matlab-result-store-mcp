@@ -3,7 +3,7 @@ name: matlab-result-store
 description: >-
   Use the MATLAB Result Store framework to declare Schemes, save or reuse solver
   results with store.cached, store.recompute and store.scope, or search, plot
-  and interpret saved results through the Result Store MCP tools or
+  and interpret saved results, run asynchronous MATLAB analysis through the Result Store MCP tools or
   common/+store and common/+query. Use for Scheme/Key/Value/RowId questions and existing registered Plots. This skill
   covers the storage framework, not general MATLAB programming or LLE theory.
 ---
@@ -37,7 +37,7 @@ Schemeで条件・保存する値・Plotを宣言するMATLABの保存フレー�
 | 結果の単位、Key、Value、保存先の共有を理解する | [基本概念](references/concepts.md) |
 | Schemeを宣言する、solverに保存・再利用を付ける、局所条件を指定する | [宣言と保存](references/writing-results.md) |
 | 条件検索、結果選択、既存Plotの画像化、比較・解釈を行う | [検索と画像による解釈](references/reading-results.md) |
-| MCPツールやグラフィカルな結果選択画面から保存結果を読む | [MCPでの閲覧](references/mcp.md) |
+| MCPで保存結果を読む、図を表示する、非同期MATLAB解析を実行する | [MCPでの閲覧・実行](references/mcp.md) |
 | 保存・検索・描画のエラーや予想外のキャッシュ一致を調べる | [トラブル対応](references/troubleshooting.md) |
 
 すべての資料を毎回読む必要はない。詳細な既存の説明が必要なら、対象リポジトリの

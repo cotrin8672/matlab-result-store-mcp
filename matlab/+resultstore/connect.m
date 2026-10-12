@@ -17,7 +17,7 @@ token = char(java.util.UUID.randomUUID());
 folder = fullfile(string(tempdir), "result-store-" + token);
 mkdir(folder);
 descriptor = fullfile(root, "results", "web", descriptorName);
-writeJson(descriptor, struct('version', 1, 'folder', folder, 'token', token, 'pid', feature('getpid')));
+writeJson(descriptor, struct('version', 1, 'folder', folder, 'token', token, 'pid', feature('getpid'), 'jobs', true));
 fig = [];
 activeFunction = [];
 activePayload = "";
@@ -33,6 +33,7 @@ connection = timer('Name', name, 'ExecutionMode', 'fixedSpacing', 'Period', .02,
 start(connection);
 
     function receive(~, ~)
+        resultstore.jobs("poll", struct());
         files = dir(fullfile(folder, '*.request.json'));
         if isempty(files), return; end
         requestFile = fullfile(folder, files(1).name);
@@ -47,6 +48,12 @@ start(connection);
                 resultstore.exportCatalog(root);
                 delete(requestFile);
                 writeJson(responseFile, struct());
+                return
+            end
+            if isfield(request, 'operation') && strcmp(request.operation, 'job')
+                reply = resultstore.jobs("submit", request);
+                delete(requestFile);
+                writeJson(responseFile, reply);
                 return
             end
             if isempty(regexp(request.row_id, '^[1-9][0-9]{0,18}$', 'once'))

@@ -2,11 +2,11 @@
 
 MATLAB Result Storeに保存された結果を検索し、図を見ながらAIと会話するためのMCPサーバーとPlugin Extension。
 
-- **MCP**: Scheme一覧、条件検索、MATファイルの読み出し、登録済みPlotの取得。
+- **MCP**: Scheme一覧、条件検索、MATファイルの読み出し、登録済みPlotの取得、非同期MATLAB実行と完了Events。
 - **Skill**: 保存フレームワークの概念・利用手順・結果解釈・トラブル対応。
 - **Extension**: Schemeと条件を画面で選び、Plotlyで拡大・縮小し、選択した結果について質問する。
 
-検索と配列取得はSQLiteとv7.3 MATを直接読み、MATLABを必要としない。図は1つの共有された描画専用MATLABで、登録済みPlot関数の描画結果から生成する。PlotごとのTS関数は不要で、数式や正規化は元のMATLAB関数を使う。保存済みのfig2plotly出力も引き続き開ける。
+検索と配列取得はSQLiteとv7.3 MATを直接読み、MATLABを必要としない。図は1つの共有MATLABで、登録済みPlot関数の描画結果から生成する。解析は同じMATLABのbackgroundPoolで動かし、メインスレッドを描画に使える状態に保つ。PlotごとのTS関数は不要で、数式や正規化は元のMATLAB関数を使う。保存済みのfig2plotly出力も引き続き開ける。
 
 ## Codex Appへ導入する
 
@@ -56,7 +56,7 @@ pnpm build
 
 対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。保存フレームワークや実験データはこのリポジトリに含まれない。
 
-## 描画専用MATLABを共有する
+## MCP用MATLABを共有する
 
 図やPlot一覧が必要なときに、MCPが保存先ごとに描画専用MATLABを1つだけ自動起動する。別のMCP接続やタブからも同じプロセスを共有する。計算用MATLABには接続しないので、そのセッションがBusyでも保存済み結果を描画できる。手動の`resultstore.connect(root)`は不要。
 
@@ -64,11 +64,39 @@ pnpm build
 
 非表示のFigureを使い回し、Plot関数自身の軸・線の更新処理をそのまま使う。結果ごとのExportやfig2plotlyのインストールは不要。
 
+2-Dの`scatter`もライブ描画できる。点ごとの位置・サイズ・色・透明度・マーカー形状、軸のカラーマップと色範囲、カラーバー、数値のDataTip行を引き継ぐ。
+
 初回は系列・軸・タイトルなどを送り、次回からは変更された系列のフィールド（`x`、`y`など）と軸設定だけを送る。ブラウザは既存の図へ`Plotly.update`でまとめて反映する。系列数や構成が変わった場合、または差分の基準が一致しない場合は図全体を送る。操作が続いている間の古い描画要求はブラウザ側で省く。
 
-同じ結果・Plotの再取得ではMATの読み込みとMATLAB描画を省く。「更新」は保存結果を読み直してPlotを再実行するため、Plot関数の編集にも追従する。ブラウザ操作ではPNG・HTMLをMATLABで毎回保存せず、AIへ渡す画像は手動追加時にブラウザで生成する。`render_plot`を直接呼ぶ場合は既定でMATLABのPNGを返す。
+PlotはNode側で最大128件・合計256MiBをLRUキャッシュする。キャッシュがある場合はMATLABへの問い合わせ・起動を省き、MCP再接続後やMATLABがBusy・終了中でも表示できる。保存データのpayloadが差し替わると別のキャッシュになる。キャッシュはOSの一時フォルダに置くので、OSの清掃で消えることがある。「更新」や`refresh: true`はキャッシュを迂回して保存結果を読み直し、Plot関数を再実行する。Plot関数を編集した場合も更新を使う。
+
+ブラウザ操作ではPNG・HTMLをMATLABで毎回保存せず、AIへ渡す画像は手動追加時にブラウザで生成する。`render_plot`は既定でPNGも要求するが、PNGを取得していないキャッシュでは`preview_available: false`になり、対話的なPlotだけを返す。PNGが必要なら`refresh: true`で取得する。画像を一度取得するとそれもキャッシュする。
 
 通信にはMATLAB標準のtimerとローカルの一時ファイルを使う。Pythonや追加Toolboxは不要。`results/web/worker.json`には接続情報だけを保存する。起動中のプロセス情報は一時フォルダのSQLiteで共有して重複起動を防ぐ。起動失敗時のログの場所はエラーに表示する。
+旧版の描画専用プロセスが残っている場合は、初回の解析要求時にMCP用プロセスだけを新しいbridgeへ置き換える。
+
+## 非同期でMATLABを実行する
+
+通常は`run_matlab_background`を使う。ジョブIDをすぐ返し、既存のMCP用MATLABのbackgroundPoolでコードを実行する。独立した関数ワークスペースで、保存先を指すstringの`root`が使える。返したい変数名を`outputs`に指定する。
+
+```json
+{
+  "code": "x = linspace(0, 1, 1000); power = mean(x.^2); disp(power);",
+  "outputs": ["power"]
+}
+```
+
+描画やthread非対応の関数・MEXが必要な場合は`run_matlab_worker`を明示的に選ぶ。R2024aでは`run`・`cd`・`clearvars`もthread非対応なので、既存スクリプトを`run(...)`で呼ぶときはworkerを使う。Parallel Computing Toolboxのプロセスpoolを1 workerで起動し、後続ジョブにも再利用する。追加のMATLABプロセスと初回pool起動の待ち時間が発生する。非対応エラーで自動的に別backendへ再実行はしない。
+
+`get_matlab_job`で状態（queued/running/succeeded/failed/cancelled）、標準出力の末尾65536文字、元のエラーとスタック、出力変数のメタデータを読む。数値は`include_values`と必要に応じて`slice`で取得する。`list_matlab_jobs`はMCP接続をまたいだ一覧、`cancel_matlab_job`はFutureへの中止要求。中止完了は状態で確認し、すでに書かれたファイルは巻き戻さない。コードはユーザーと同じ権限で動くため、実行範囲を確認して使う。
+
+ジョブ状態・ログ・出力MATはOSの一時フォルダに保存し、MCP再接続後も取得できる。MATLAB自体が終了すると実行中のジョブは失敗として記録する。コードは関数の本体として実行する。解析スクリプトはworkerで`run(...)`を使い、関数内で使えないスクリプトはそのエラーを確認して呼び出し方を選ぶ。
+
+### 完了Events
+
+MCP 2.0（`2026-07-28`）の`events/list`、`events/subscribe`、`events/unsubscribe`と、`matlab.job.finished`を提供する。購読条件は`{"job_id":"<返されたID>"}`。成功・失敗・中止を、ジョブID・backend・最終状態・結果URIだけの小さなwebhookで通知する。値やログは`get_matlab_job`で読む。署名・callback確認・再送・購読更新に対応し、MCP再起動後も未送信の通知を維持する。
+
+[公式Events仕様](https://developers.openai.com/plugins/build/mcp-events)での対応先はWork web、デスクトップのWork Cloud、Dots。ホストがEventsを購読する場合に完了後の作業再開に使える。ローカルCodexの自動再開は確認していない。非対応ホストでは`get_matlab_job`で確認する。webhookには公開HTTPSの宛先と稼働中のMCPが必要で、このloopbackサーバー自体に公開用の認証・デプロイは含めない。
 
 ## オフライン用に既存Plotを出力する
 
@@ -120,6 +148,8 @@ pnpm preview "path/to/project" 8732
 
 プレビューは実際のMCPクライアント、HTTPサーバー、MCP Appsの`AppBridge`を使用する。AIへの送信は行わない。
 
+閲覧画面のPlot背景・軸・文字・グリッドはホストのテーマに追従する。テーマ切替では色だけを更新し、ズーム範囲と系列データを保持する。手動でコンテキストに追加する画像も、その時点のテーマになる。
+
 ## MCPツール
 
 | ツール | 用途 |
@@ -129,10 +159,15 @@ pnpm preview "path/to/project" 8732
 | `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
 | `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
-| `render_plot` | 共有の描画専用MATLABでPlotを実行し、PNGとHTML・Plotly JSONへのresource linkを返す。描画完了後、同じ保存先を開いている既存画面にも反映する |
+| `render_plot` | キャッシュ、共有MATLAB、出力済みPlotから図を取得する。既存画面にも反映し、PNGは取得済みなら返す |
 | `annotate_plot` | 指定したPlotの点ラベル・縦線・横線を設定する。同じ閲覧画面に反映し、空配列でAI注釈を消す |
+| `run_matlab_background` | backgroundPoolでコードを実行し、ジョブIDを即時に返す |
+| `run_matlab_worker` | 再利用するプロセスworkerでコードを実行する |
+| `get_matlab_job` | 状態・ログ・エラー・出力変数を取得する |
+| `list_matlab_jobs` | 保存先の最近のジョブを一覧する |
+| `cancel_matlab_job` | キュー内・実行中のジョブの中止を要求する |
 
-AIの`render_plot`が完了すると、既存のMatlabResults画面が約1秒間隔で完了通知を読み、Scheme・RowId・Plotを同期する。同じ結果の再描画も反映する。新しいタブや会話コンテキストは追加しない。画面内の行選択・Sweepは通知を発生させないので、更新を繰り返さない。表示先の通知だけをOSの一時フォルダで保存先ごとに共有し、実験データは変更しない。
+AIの`render_plot`が完了すると、既存のMatlabResults画面が約1秒間隔で完了通知を読み、Scheme・RowId・Plotを同期する。描画revisionが変わった場合だけ読み直し、同じキャッシュの再取得では再描画や読み込み表示を繰り返さない。同じ結果の明示的な再描画は反映する。新しいタブや会話コンテキストは追加しない。画面内の行選択・Sweepは通知を発生させない。表示先の通知だけをOSの一時フォルダで保存先ごとに共有し、実験データは変更しない。
 `annotate_plot`も対象の図を既存画面に表示する。同じ図への注釈変更は注釈だけを更新する。
 
 検索例:
@@ -224,7 +259,7 @@ Codex Appへのローカル導入は上記のMarketplaceを使う。ChatGPT側�
 - Valueの読み出しは、v7.3 MATの密な数値・logical配列。struct/cellの展開は未対応。
 - 配列Keyの一致・複数選択は`list_candidates`の保存値を使う。任意の配列を入力して作る操作はない。
 - ライブ描画は2-D Cartesian axesの線・マーカー・単色のpolygon patch・xline/ylineに対応する。MATLABのUIコールバックやその他の描画要素は移植しない。対応外はエラーとして伝え、オフラインのfig2plotly出力を使用できる。フォントや凡例位置はMATLABと完全には一致しない。
-- 保存結果の計算・更新・削除を行うツールはない。
+- MATLAB実行ツールは任意コードを実行する。保存結果の一括比較・要約用の宣言的なクエリAPIは未実装。
 
 ## 確認
 
