@@ -1,7 +1,7 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
-import { themedPlotLayout, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
+import { themedPlotLayout, themedPlotData, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
 import type { BrowserSelection, BrowserState } from '../browser.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
@@ -16,7 +16,7 @@ declare const Plotly: {
   react(element: HTMLElement, data: unknown[], layout: Record<string, unknown>, config: Record<string, unknown>): Promise<void>;
   purge(element: HTMLElement): void;
   addFrames(element: HTMLElement, frames: unknown[]): Promise<void>;
-  update(element: HTMLElement, data: Record<string, unknown>, layout: Record<string, unknown>, indices: number[]): Promise<void>;
+  update(element: HTMLElement, data: Record<string, unknown>, layout: Record<string, unknown>, indices?: number[]): Promise<void>;
   relayout(element: HTMLElement, layout: Record<string, unknown>): Promise<void>;
   toImage(element: HTMLElement, options: Record<string, unknown>): Promise<string>;
   Plots: { resize(element: HTMLElement): Promise<void> };
@@ -355,14 +355,14 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (update.plot) {
     delete next.plot.layout.width; delete next.plot.layout.height; next.plot.layout.autosize = true;
     const colors = themeColors();
-    const layout = { ...next.plot.layout, paper_bgcolor: colors.background, plot_bgcolor: colors.background,
+    const layout = { ...structuredClone(next.plot.layout), paper_bgcolor: colors.background, plot_bgcolor: colors.background,
       font: { ...(next.plot.layout.font as object), color: colors.text } };
-    await Plotly.react(element('plot'), next.plot.data, layout, { responsive: true, displaylogo: false, showLink: false });
+    await Plotly.react(element('plot'), structuredClone(next.plot.data), layout, { responsive: true, displaylogo: false, showLink: false });
     if (next.plot.frames?.length) await Plotly.addFrames(element('plot'), next.plot.frames);
   } else {
     const traces = update.traces ?? [], fields = new Set(traces.flatMap(trace => Object.keys(trace.values)));
     if (traces.length || Object.keys(update.layout ?? {}).length) await Plotly.update(element('plot'),
-      Object.fromEntries([...fields].map(key => [key, traces.map(trace => trace.values[key])])), update.layout ?? {}, traces.map(trace => trace.index));
+      Object.fromEntries([...fields].map(key => [key, traces.map(trace => structuredClone(trace.values[key]))])), structuredClone(update.layout ?? {}), traces.map(trace => trace.index));
   }
   renderedPlot = next;
   if (token !== request) return;
@@ -379,7 +379,7 @@ async function refreshAnnotations(force = false) {
   const colors = themeColors();
   const signature = JSON.stringify(colors);
   if (selected !== artifact || !renderedPlot || (!force && saved.revision === plotAnnotations.revision && signature === plotColors)) return;
-  await Plotly.relayout(element('plot'), themedPlotLayout(renderedPlot.plot, saved.annotations, colors));
+  await Plotly.update(element('plot'), themedPlotData(renderedPlot.plot, colors.background), themedPlotLayout(renderedPlot.plot, saved.annotations, colors));
   plotAnnotations = saved; plotColors = signature;
 }
 async function showSelection(selection: BrowserSelection, reply?: CallToolResult) {

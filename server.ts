@@ -25,7 +25,7 @@ function plotHtml(plot: Plot) {
 export function createServer(root?: string): McpServer {
   let store: ResultStore | undefined;
   const getStore = () => store ??= new ResultStore(root ?? configuredRoot());
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.3.0' }, {
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.3.1' }, {
     cacheHints: { 'server/discover': { ttlMs: 300000, cacheScope: 'private' }, 'tools/list': { ttlMs: 300000, cacheScope: 'private' } },
   });
   const getJobs = () => matlabJobs(getStore().root);

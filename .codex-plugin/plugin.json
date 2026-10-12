@@ -1,6 +1,6 @@
 {
   "name": "matlab-result-store",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Search MATLAB results, discuss cached interactive plots, and run asynchronous MATLAB analysis.",
   "author": { "name": "cotrin8672" },
   "repository": "https://github.com/cotrin8672/matlab-result-store-mcp",
