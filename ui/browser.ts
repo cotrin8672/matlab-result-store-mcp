@@ -1,15 +1,18 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
-import { themedPlotLayout, themedPlotData, applyPlotUpdate, type Plot, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
+import { themedPlotLayout, themedPlotData, applyPlotUpdate, type Plot, type PlotAnnotation, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
 import type { BrowserSelection, BrowserState } from '../browser.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
 type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots: { index: number; name: string }[] | null };
-type Catalog = { schemes: Scheme[]; plot_catalog: string };
+type Catalog = { root: string; directory: string; schemes: Scheme[]; plot_catalog: string; browser_state_uri?: string };
 type Row = { row_id: string; keys: Record<string, unknown>; key_labels: Record<string, string> };
 type Page = { rows: Row[]; total: number; matched_total: number; first_match: string | null; selected_matches: boolean };
-type Artifact = Row & { scheme: string; plot_index: number; plot_name: string; plotly_uri: string; annotations_uri: string; payload: string; revision?: string };
+type Artifact = Row & { directory: string; scheme: string; plot_index: number; plot_name: string; plotly_uri: string; annotations_uri: string; payload: string; revision?: string; browser_state_uri?: string };
+type Pin = Row & { id: string; directory: string; scheme: string; plot_index: number; plot_name: string; payload: string; revision: string; created_at: string; annotations: PlotAnnotation[]; plotly_uri: string };
+type Pins = { pins: Pin[]; revision: string };
+type PinCard = { pin: Pin; element: HTMLElement; graph: HTMLElement; plot?: Plot; colors: string };
 type Condition = { id: number; key: Key; definition: QueryDefinition; values: QueryValue[]; all: boolean;
   total: number; domain: Candidate[]; domainFilters: Filter[]; known: Map<string, Candidate>; positions: number[]; sync?: () => void };
 declare const Plotly: {
@@ -26,17 +29,22 @@ declare const MathJax: { startup: { promise: Promise<void> } };
 const app = new App({ name: 'MatlabResults', version: '0.1.0' }, { availableDisplayModes: ['inline', 'fullscreen'] }, { autoResize: false });
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const schemeSelect = element<HTMLSelectElement>('scheme'), plotSelect = element<HTMLSelectElement>('plot-choice');
-const status = element('status'), ask = element<HTMLButtonElement>('ask'), addContextButton = element<HTMLButtonElement>('add-context');
+const directoryInput = element<HTMLInputElement>('directory');
+const status = element('status'), addContextButton = element<HTMLButtonElement>('add-context'), pinButton = element<HTMLButtonElement>('pin-plot');
 const dialog = element<HTMLDialogElement>('picker-dialog');
 const compactLayout = matchMedia('(max-width:760px)');
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
 let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
 let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, updatesPending = false, browserRevision = '', plotColors = '';
+let browserStateUri = 'result-store://browser/state', browserPinsRevision = '';
 let conditions: Condition[] = [];
+const pinCards = new Map<string, PinCard>();
+let pinsRevision = '', pinsRequest = 0, pinQueue: Promise<unknown> = Promise.resolve();
 
 function showError(error: unknown) { status.textContent = status.title = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
 function note(text: string) { status.textContent = status.title = text; status.dataset.error = 'false'; }
+function useBrowserState(uri?: string) { if (uri && uri !== browserStateUri) { browserStateUri = uri; browserRevision = browserPinsRevision = ''; } }
 function themeColors() {
   const style = getComputedStyle(document.documentElement);
   return { background: style.backgroundColor, text: style.color,
@@ -46,7 +54,15 @@ function data<T>(reply: CallToolResult): T {
   if (reply.isError) throw new Error(reply.content.filter(c => c.type === 'text').map(c => c.text).join('\n'));
   return reply.structuredContent as T;
 }
-async function call<T>(name: string, args: Record<string, unknown>): Promise<T> { return data<T>(await app.callServerTool({ name, arguments: args })); }
+async function call<T>(name: string, args: Record<string, unknown>): Promise<T> {
+  return data<T>(await app.callServerTool({ name, arguments: { ...(catalog && !['list_stores', 'list_pinned_plots', 'unpin_plot'].includes(name) ? { directory: catalog.directory } : {}), ...args } }));
+}
+async function read<T>(uri: string): Promise<T> {
+  const resource = await app.readServerResource({ uri });
+  const content = resource.contents.find(c => 'text' in c);
+  if (!content || !('text' in content)) throw new Error('Plotデータを読み取れませんでした。');
+  return JSON.parse(content.text) as T;
+}
 function run(action: Promise<unknown>) { void action.catch(showError); }
 function currentScheme() { return catalog.schemes.find(s => s.id === schemeSelect.value)!; }
 function option(value: string, text: string) { const o = document.createElement('option'); o.value = value; o.textContent = text; return o; }
@@ -119,7 +135,7 @@ function changeScheme(id?: string) {
   element('direction').textContent = '↑';
 }
 async function addCondition() {
-  const key = currentScheme().keys[0]; if (!key) return;
+  const key = currentScheme()?.keys[0]; if (!key) return;
   const c: Condition = { id: ++nextId, key, definition: queriesFor(key.kind)[0], values: [], all: false, total: 0, domain: [], domainFilters: [], known: new Map(), positions: [0] };
   conditions.push(c); await refreshFixed(c.id);
 }
@@ -306,7 +322,7 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
     note(''); highlight(); return;
   }
   selectedRowId = target; highlight();
-  if (force || !selected || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
+  if (force || !selected || selected.directory !== catalog.directory || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
   else note('');
 }
 async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
@@ -319,7 +335,7 @@ async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
   renderQueries(); renderParameters(); await evaluate(token, rowId, reply, force);
 }
 async function clearPlot(token = request) {
-  ask.disabled = addContextButton.disabled = true;
+  pinButton.disabled = addContextButton.disabled = true;
   const task = plotQueue.then(() => {
     if (token !== request) return;
     selected = undefined; renderedPlot = undefined; Plotly.purge(element('plot'));
@@ -328,7 +344,7 @@ async function clearPlot(token = request) {
   plotQueue = task.catch(() => {}); await task;
 }
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
-  ask.disabled = addContextButton.disabled = true;
+  pinButton.disabled = addContextButton.disabled = true;
   if (!currentScheme().plots?.length) { await clearPlot(token); if (token === request) note('登録済みPlotがありません。'); return; }
   const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
   plotQueue = task.catch(() => {});
@@ -338,17 +354,15 @@ async function loadSelection(rowId: string, token: number, reply?: CallToolResul
 async function drawSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   if (token !== request) return;
   note('Plotを読み込み中…');
-  const args = { scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
+  const args = { directory: catalog.directory, scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
   const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh },
     _meta: { 'matlab-results/browser': true } });
   const artifact = data<Artifact>(response);
   if (token !== request) return;
+  useBrowserState(artifact.browser_state_uri);
   let update = response._meta?.plot_update as PlotUpdate | undefined;
   if (!update || (!update.plot && update.base_revision !== renderedPlot?.revision)) {
-    const resource = await app.readServerResource({ uri: artifact.plotly_uri });
-    const content = resource.contents.find(c => 'text' in c);
-    if (!content || !('text' in content)) throw new Error('Plotデータを読み取れませんでした。');
-    update = { revision: '', plot: JSON.parse(content.text) as Plot };
+    update = { revision: artifact.revision ?? '', plot: await read<Plot>(artifact.plotly_uri) };
   }
   await MathJax.startup.promise; if (token !== request) return;
   const next = applyPlotUpdate(renderedPlot, update);
@@ -368,14 +382,11 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (token !== request) return;
   selected = artifact; plotAnnotations = { revision: '', annotations: [] };
   await refreshAnnotations(true); if (token !== request) return;
-  ask.disabled = addContextButton.disabled = false; note('');
+  pinButton.disabled = addContextButton.disabled = false; note('');
 }
 async function refreshAnnotations(force = false) {
   const artifact = selected; if (!artifact || !renderedPlot) return;
-  const resource = await app.readServerResource({ uri: artifact.annotations_uri });
-  const content = resource.contents.find(c => 'text' in c);
-  if (!content || !('text' in content)) throw new Error('Plotの注釈を読み取れませんでした。');
-  const saved = JSON.parse(content.text) as PlotAnnotations;
+  const saved = await read<PlotAnnotations>(artifact.annotations_uri);
   const colors = themeColors();
   const signature = JSON.stringify(colors);
   if (selected !== artifact || !renderedPlot || (!force && saved.revision === plotAnnotations.revision && signature === plotColors)) return;
@@ -383,23 +394,25 @@ async function refreshAnnotations(force = false) {
   plotAnnotations = saved; plotColors = signature;
 }
 async function showSelection(selection: BrowserSelection, reply?: CallToolResult) {
-  if (selected?.scheme === selection.scheme && selected.row_id === selection.row_id && selected.plot_index === selection.plot_index &&
+  const directory = selection.directory ?? catalog?.directory;
+  if (selected && selected.directory === directory && selected.scheme === selection.scheme && selected.row_id === selection.row_id && selected.plot_index === selection.plot_index &&
       (reply?.structuredContent as Partial<Artifact> | undefined)?.revision === renderedPlot?.revision && renderedPlot?.revision) return;
-  if (!catalog?.schemes.some(s => s.id === selection.scheme && s.plots?.some(p => p.index === selection.plot_index)))
-    await accept(await app.callServerTool({ name: 'list_schemes', arguments: {} }));
+  if (catalog?.directory !== directory || !catalog?.schemes.some(s => s.id === selection.scheme && s.plots?.some(p => p.index === selection.plot_index)))
+    await openDirectory(directory, false);
+  if ((directory && catalog?.directory !== directory) || !catalog?.schemes.some(s => s.id === selection.scheme)) return;
   if (currentScheme().id !== selection.scheme) changeScheme(selection.scheme);
   plotSelect.value = String(selection.plot_index);
   await selectRow(selection.row_id, reply, true);
 }
 async function refreshBrowser() {
   const token = request;
-  const resource = await app.readServerResource({ uri: 'result-store://browser/state' });
-  const content = resource.contents.find(c => 'text' in c);
-  if (!content || !('text' in content)) throw new Error('Plotの表示先を読み取れませんでした。');
-  const state = JSON.parse(content.text) as BrowserState;
-  if (state.revision === browserRevision) return false;
+  const state = await read<BrowserState>(browserStateUri);
   if (token !== request) return false;
-  const samePlot = state.selection && selected?.scheme === state.selection.scheme && selected.row_id === state.selection.row_id && selected.plot_index === state.selection.plot_index;
+  const pins = state.pins_revision ?? (state.kind === 'pins' ? state.revision : undefined);
+  if (pins && pins !== browserPinsRevision) { await refreshPins(); browserPinsRevision = pins; }
+  if (state.revision === browserRevision || token !== request) return false;
+  if (state.kind === 'pins') { browserRevision = state.revision; return false; }
+  const samePlot = state.selection && selected?.directory === (state.selection.directory ?? catalog.directory) && selected.scheme === state.selection.scheme && selected.row_id === state.selection.row_id && selected.plot_index === state.selection.plot_index;
   const unchanged = samePlot && (state.kind === 'annotations' || state.plot_revision === renderedPlot?.revision);
   if (state.selection && !unchanged) await showSelection(state.selection);
   browserRevision = state.revision;
@@ -424,13 +437,95 @@ async function addContext() {
   plotQueue = task.catch(() => {});
   return task;
 }
+async function setCatalog(updated: Catalog, token = request) {
+  useBrowserState(updated.browser_state_uri);
+  const old = catalog?.directory === updated.directory ? schemeSelect.value : '';
+  catalog = updated; directoryInput.value = updated.directory;
+  schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`)));
+  schemeSelect.disabled = element<HTMLButtonElement>('add-query').disabled = element<HTMLButtonElement>('clear-query').disabled = !catalog.schemes.length;
+  if (!catalog.schemes.length) {
+    conditions = []; selectedRowId = undefined; plotSelect.replaceChildren(); plotSelect.disabled = true;
+    element('filters').replaceChildren(); element('parameters').replaceChildren(); element('head').replaceChildren(); element('rows').replaceChildren();
+    element('matches').textContent = element('page').textContent = '';
+    element<HTMLButtonElement>('previous').disabled = element<HTMLButtonElement>('next').disabled = true;
+    await clearPlot(token); note('登録済みのSchemeがありません。'); return;
+  }
+  await clearPlot(token);
+  if (token !== request) return;
+  changeScheme(catalog.schemes.some(s => s.id === old) ? old : undefined);
+}
+async function openDirectory(directory?: string, evaluate = true) {
+  const token = ++request; note('読み込み中…');
+  const updated = await call<Catalog>('list_schemes', directory ? { directory } : {});
+  if (token !== request) return;
+  await setCatalog(updated, token);
+  if (token === request && catalog.schemes.length && evaluate) await refreshFixed();
+}
+async function themePins() {
+  const colors = themeColors(), signature = JSON.stringify(colors);
+  for (const card of pinCards.values()) {
+    if (!card.plot || card.colors === signature) continue;
+    await Plotly.update(card.graph, themedPlotData(card.plot, colors.background), themedPlotLayout(card.plot, card.pin.annotations, colors));
+    card.colors = signature;
+  }
+}
+async function acceptPins(snapshot: Pins, token = ++pinsRequest) {
+  const task = pinQueue.then(async () => {
+    if (token !== pinsRequest || snapshot.revision === pinsRevision) return;
+    for (const [id, card] of pinCards) if (!snapshot.pins.some(pin => pin.id === id)) {
+      graphObserver.unobserve(card.graph); Plotly.purge(card.graph); card.element.remove(); pinCards.delete(id);
+    }
+    element('pins-panel').hidden = !snapshot.pins.length; element('pins-count').textContent = String(snapshot.pins.length);
+    for (const pin of snapshot.pins) {
+      let card = pinCards.get(pin.id);
+      if (!card) {
+        const section = document.createElement('article'); section.className = 'pin-card'; section.dataset.pin = pin.id;
+        const heading = document.createElement('div'); heading.className = 'pin-heading';
+        const title = document.createElement('h3'); title.textContent = `${pin.scheme} / RowId ${pin.row_id} · ${pin.plot_name}`; title.title = title.textContent;
+        const remove = button('×', () => run(call<Pins>('unpin_plot', { pin_id: pin.id }).then(snapshot => acceptPins(snapshot))), `${pin.scheme} RowId ${pin.row_id} ${pin.plot_name} のピンを解除`);
+        remove.title = 'ピンを解除'; heading.append(title, remove);
+        const directory = document.createElement('p'); directory.className = 'pin-directory muted'; directory.textContent = directory.title = pin.directory;
+        const graph = document.createElement('div'); graph.className = 'pin-plot'; graph.setAttribute('aria-label', `${pin.scheme} RowId ${pin.row_id} ${pin.plot_name}`);
+        section.append(heading, directory, graph); element('pins').append(section);
+        card = { pin, element: section, graph, colors: '' }; pinCards.set(pin.id, card); graphObserver.observe(graph);
+      }
+      if (card.pin.revision !== pin.revision || JSON.stringify(card.pin.annotations) !== JSON.stringify(pin.annotations)) { card.plot = undefined; card.colors = ''; }
+      card.pin = pin;
+      if (!card.plot) {
+        const plot = await read<Plot>(pin.plotly_uri), layout = structuredClone(plot.layout), colors = themeColors();
+        delete layout.width; delete layout.height; layout.autosize = true;
+        layout.paper_bgcolor = layout.plot_bgcolor = colors.background; layout.font = { ...(layout.font as object), color: colors.text };
+        await MathJax.startup.promise;
+        await Plotly.react(card.graph, structuredClone(plot.data), layout, { responsive: true, displaylogo: false, showLink: false });
+        if (plot.frames?.length) await Plotly.addFrames(card.graph, structuredClone(plot.frames));
+        card.plot = plot;
+      }
+    }
+    await themePins();
+    if (token === pinsRequest) pinsRevision = snapshot.revision;
+  });
+  pinQueue = task.catch(() => {}); await task;
+}
+async function refreshPins() {
+  const token = ++pinsRequest, snapshot = await call<Pins>('list_pinned_plots', {});
+  await acceptPins(snapshot, token);
+}
+async function pinCurrent() {
+  await plotQueue;
+  const artifact = selected; if (!artifact || !renderedPlot) return;
+  pinButton.disabled = true;
+  try {
+    await acceptPins(await call<Pins>('pin_plot', { directory: artifact.directory, scheme: artifact.scheme, row_id: artifact.row_id,
+      plot_index: artifact.plot_index, known_revision: renderedPlot.revision }));
+    note('ピン留めしました。');
+  } finally { if (selected === artifact) pinButton.disabled = false; }
+}
 async function accept(reply: CallToolResult) {
   const payload = data<Partial<Catalog & Artifact>>(reply);
+  useBrowserState(payload.browser_state_uri);
   if (payload.schemes) {
-    const old = schemeSelect.value; catalog = payload as Catalog;
-    schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`)));
-    if (!catalog.schemes.length) { note('登録済みのSchemeがありません。'); return; }
-    changeScheme(catalog.schemes.some(s => s.id === old) ? old : undefined); await refreshFixed();
+    const token = ++request; await setCatalog(payload as Catalog, token);
+    if (token === request && catalog.schemes.length) await refreshFixed();
   } else if (payload.plotly_uri && payload.scheme && payload.row_id) {
     await showSelection(payload as Artifact, reply);
   }
@@ -438,10 +533,12 @@ async function accept(reply: CallToolResult) {
 
 element('add-query').onclick = () => run(addCondition());
 element('clear-query').onclick = () => { conditions = []; run(refreshFixed()); };
+element('open-directory').onclick = () => run(openDirectory(directoryInput.value.trim()));
+directoryInput.onkeydown = event => { if (event.key === 'Enter') run(openDirectory(directoryInput.value.trim())); };
 schemeSelect.onchange = () => { changeScheme(); run(refreshFixed()); };
 plotSelect.onchange = () => { if (selectedRowId) run(evaluate(++request, selectedRowId, undefined, true)); };
 element('refresh').onclick = () => run((async () => {
-  const updated = await call<Catalog>('list_schemes', {}); const old = currentScheme().id; catalog = updated;
+  const updated = await call<Catalog>('list_schemes', {}); const old = currentScheme()?.id; catalog = updated; directoryInput.value = updated.directory; useBrowserState(updated.browser_state_uri);
   if (catalog.schemes.some(s => s.id === old)) {
     schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`))); schemeSelect.value = old; configurePlots(true);
     conditions = conditions.filter(c => currentScheme().keys.some(k => k.name === c.key.name));
@@ -456,23 +553,29 @@ element<HTMLSelectElement>('sort').onchange = () => { offset = 0; run(evaluate(+
 element('direction').onclick = () => { element('direction').textContent = element('direction').textContent === '↑' ? '↓' : '↑'; offset = 0; run(evaluate(++request)); };
 element('toggle-table').onclick = () => { const hidden = element('main').classList.toggle('table-hidden'); element('table-wrap').hidden = hidden; element('pages').hidden = hidden; element('toggle-table').textContent = hidden ? 'Tableを表示' : 'Tableを隠す'; };
 addContextButton.onclick = () => run(addContext());
-ask.onclick = () => run((async () => {
-  const artifact = await addContext(); if (!artifact) return;
-  const question = element<HTMLTextAreaElement>('question').value.trim() || 'この結果の特徴を説明して。';
-  const text = `${question}\n\nScheme: ${artifact.scheme}\nRowId: ${artifact.row_id}\nPlot: ${artifact.plot_name}\n条件: ${JSON.stringify(artifact.keys)}`;
-  const message = { role: 'user' as const, content: [{ type: 'text' as const, text }], _meta: { 'openai/message': { send: false } } };
-  const response = await app.sendMessage(message); if (response.isError) throw new Error('会話に渡せませんでした。'); note('選択した結果を会話に渡しました。');
-})());
+pinButton.onclick = () => run(pinCurrent());
 let resizeFrame = 0;
-new ResizeObserver(() => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { if (selected) void Plotly.Plots.resize(element('plot')); }); }).observe(element('plot'));
+const graphObserver = new ResizeObserver(() => {
+  cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => {
+    if (selected) void Plotly.Plots.resize(element('plot'));
+    for (const card of pinCards.values()) if (card.plot) void Plotly.Plots.resize(card.graph);
+  });
+});
+graphObserver.observe(element('plot'));
 function theme(context: ReturnType<App['getHostContext']>) {
   if (context?.theme) applyDocumentTheme(context.theme);
   if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables);
   if (selected) {
     const task = plotQueue.then(() => refreshAnnotations()); plotQueue = task.catch(() => {}); run(task);
   }
+  const task = pinQueue.then(() => themePins()); pinQueue = task.catch(() => {}); run(task);
 }
 app.addEventListener('hostcontextchanged', theme); app.ontoolresult = reply => run(accept(reply)); await app.connect(); theme(app.getHostContext());
+run(refreshPins());
+run((async () => {
+  const listing = await call<{ stores: { directory: string; name: string }[] }>('list_stores', {});
+  element('directories').replaceChildren(...listing.stores.map(store => option(store.directory, store.name)));
+})());
 setInterval(() => {
   if (document.hidden || !catalog || updatesPending) return;
   updatesPending = true;

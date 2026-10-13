@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { lookup } from 'node:dns/promises';
 import { request } from 'node:https';
 import { BlockList, isIP } from 'node:net';
+import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { ProtocolError, type McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
@@ -9,7 +10,7 @@ import type { Job } from './jobs.ts';
 
 const eventName = 'matlab.job.finished';
 const jobId = z.string().uuid();
-const args = z.object({ job_id: jobId }).strict();
+const args = z.object({ job_id: jobId, directory: z.string().min(1).refine(path.isAbsolute).optional() }).strict();
 const destination = z.object({ mode: z.literal('webhook'), url: z.url() });
 const subscription = z.object({ name: z.literal(eventName), arguments: args,
   delivery: destination.extend({ secret: z.string().regex(/^whsec_[A-Za-z0-9+/]+={0,2}$/) }).strict(),
@@ -85,20 +86,20 @@ export class JobEvents {
       PRIMARY KEY(subscription_id, event_id));`);
   }
 
-  static register(server: McpServer, getEvents: () => JobEvents) {
+  static register(server: McpServer, getEvents: (directory?: string) => JobEvents) {
     // Events is a draft extension; SDK 2.3.1 accepts custom capabilities but has no Events type yet.
     const capabilities = { ...server.server.getCapabilities(), events: {} };
     server.server.registerCapabilities(capabilities);
     server.server.setRequestHandler('events/list', { params: z.object({ cursor: z.null().optional() }).default({}) }, () => ({ events: [{
-      name: eventName, description: 'A MATLAB Job completed, failed, or was cancelled. Filter by the Job ID returned by a run tool. Retrieve logs and output variables with get_matlab_job.',
+      name: eventName, description: 'A MATLAB Job completed, failed, or was cancelled. Filter by job_id and pass directory when using a nondefault Store. Retrieve logs and output variables with get_matlab_job.',
       delivery: ['webhook'], inputSchema: z.toJSONSchema(args),
       payloadSchema: { type: 'object', properties: { job_id: { type: 'string' }, backend: { enum: ['background', 'worker'] },
         state: { enum: ['succeeded', 'failed', 'cancelled'] }, result_uri: { type: 'string' } },
         required: ['job_id', 'backend', 'state', 'result_uri'], additionalProperties: false },
     }] }));
-    server.server.setRequestHandler('events/subscribe', { params: subscription }, (value, context) => getEvents().subscribe(value, jobOwner(context)));
+    server.server.setRequestHandler('events/subscribe', { params: subscription }, (value, context) => getEvents(value.arguments.directory).subscribe(value, jobOwner(context)));
     server.server.setRequestHandler('events/unsubscribe', { params: z.object({ name: z.literal(eventName), arguments: args, delivery: destination.strict() }) }, (value, context) => {
-      const events = getEvents(), owner = jobOwner(context), id = events.identity(owner, value.delivery.url, value.arguments.job_id);
+      const events = getEvents(value.arguments.directory), owner = jobOwner(context), id = events.identity(owner, value.delivery.url, value.arguments.job_id);
       events.db.prepare('DELETE FROM event_subscriptions WHERE id=? AND owner=?').run(id, owner);
       return {};
     });

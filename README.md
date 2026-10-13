@@ -4,7 +4,7 @@ MATLAB Result Storeに保存された結果を検索し、図を見ながらAI�
 
 - **MCP**: Scheme一覧、条件検索、MATファイルの読み出し、登録済みPlotの取得、非同期MATLAB実行と完了Events。
 - **Skill**: 保存フレームワークの概念・利用手順・結果解釈・トラブル対応。
-- **Extension**: Schemeと条件を画面で選び、Plotlyで拡大・縮小し、選択した結果について質問する。
+- **Extension**: ディレクトリ・Scheme・条件を選び、Plotlyで拡大・縮小し、図をピン留めして比較する。
 
 検索と配列取得はSQLiteとv7.3 MATを直接読み、MATLABを必要としない。図は1つの共有MATLABで、登録済みPlot関数の描画結果から生成する。解析は同じMATLABのbackgroundPoolで動かし、メインスレッドを描画に使える状態に保つ。PlotごとのTS関数は不要で、数式や正規化は元のMATLAB関数を使う。保存済みのfig2plotly出力も引き続き開ける。
 
@@ -37,8 +37,9 @@ MCPの初回起動でも同じ準備を行うため、初回だけパッケー�
 保存先は通常`~/.codex/matlab-result-store/store.local.json`に保持する。
 `CODEX_HOME`があればその配下、`PLUGIN_DATA`があればそのディレクトリを使う。
 MCPにだけ`PLUGIN_DATA`が渡されても、その中に設定がなければ通常の個人用設定を読む。
-Pluginのキャッシュを更新しても設定は残る。保存フォルダを変える場合もセットアップを使う。
-個人用の設定は最後に指定した1フォルダで、新しいチャットから反映される。
+Pluginのキャッシュを更新しても設定は残る。この設定は既定の保存フォルダになる。
+閲覧中は画面のDirectory欄、MCPでは各ツールの`directory`に任意の絶対パスを指定できる。既定の設定は書き換えない。
+`list_stores`は指定したフォルダ自身と直下の子フォルダから`results/store.sqlite`を持つ保存先を列挙する。特定のプロジェクト名やディレクトリ構成には依存しない。
 
 対象は既存のResult Store形式の`results/store.sqlite`とMATファイルを持つプロジェクト。
 保存フレームワークや実験データはこのリポジトリに含まれない。図の表示には、後述の描画専用MATLAB、または保存済みのPlot出力を使う。MCP Apps UIの表示はホストの対応に依存する。
@@ -135,7 +136,7 @@ resultstore.exportPlot("waveform", uint64(1), 1, root);
 pnpm preview "path/to/project" 8732
 ```
 
-`http://127.0.0.1:8732`を開く。Schemeを選び、「＋ Query」でKeyとクエリを追加する。操作はMATLABの`query_browser`に合わせている。
+`http://127.0.0.1:8732`を開く。Directory欄で保存先を指定し、Schemeを選び、「＋ Query」でKeyとクエリを追加する。操作はMATLABの`query_browser`に合わせている。
 
 - Fixed: `isEqual`、`oneOf`、`between`、`atLeast`、`atMost`、`contains`。
 - Parameters: `sweepValue`、`selectValue`、`selectValues`、`chooseValues`、`sweepRange`、`setRange`、`sweepMinimum`、`setMinimum`、`sweepMaximum`、`setMaximum`、`searchText`。
@@ -144,7 +145,10 @@ pnpm preview "path/to/project" 8732
 
 テーブルはグラフの下に配置し、Fixedの結果をページ単位で表示する。並べ替え・昇降順・表示切り替えに対応。行をクリックするとPlotを描画し、すべての一致パラメータをその行の値へ同期する。範囲などの条件は保持する。一致が1件なら自動選択し、複数件では先頭を勝手に選ばない。
 
-候補の複数選択は「すべて」と除外を扱い、候補が多い場合はページを移動できる。配列Keyも保存値を候補から選択できる。「この結果について質問」は、選択したScheme・RowId・Plot・条件と質問を右側の下書き欄へ渡す。
+候補の複数選択は「すべて」と除外を扱い、候補が多い場合はページを移動できる。配列Keyも保存値を候補から選択できる。
+
+Plotヘッダーの「Pin」で現在の図をページ下部のPinned Canvasに保存する。別Scheme・別ディレクトリへ切り替えても残り、各図を独立して拡大・縮小できる。「解除」はピンだけを削除する。
+ピンは図のデータ・保存条件・AI注釈のスナップショットで、元の結果の再計算や注釈編集に追従しない。同じ保存payloadの再ピン留めは重複を作らない。個人用設定と同じ場所の`pins/`に保存し、アプリやPluginの再起動後も保持する。
 
 プレビューは実際のMCPクライアント、HTTPサーバー、MCP Appsの`AppBridge`を使用する。AIへの送信は行わない。
 
@@ -156,12 +160,16 @@ pnpm preview "path/to/project" 8732
 | ツール | 用途 |
 | --- | --- |
 | `open_browser` | 明示的に閲覧画面を開く。既に開いている画面はそのまま使う |
+| `list_stores` | 任意のディレクトリ自身と直下の子フォルダから保存先を探す |
 | `list_schemes` | Scheme・Key・Value・登録済みPlot・件数を列挙する |
 | `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
 | `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
-| `render_plot` | キャッシュ、共有MATLAB、出力済みPlotから図を取得する。既存画面にも反映し、PNGは取得済みなら返す |
+| `render_plot` | 図を取得してMatlabResults画面にも表示する。連続した表示は同じUIセッションを使い、PNGは取得済みなら返す |
 | `annotate_plot` | 指定したPlotの点ラベル・縦線・横線を設定する。同じ閲覧画面に反映し、空配列でAI注釈を消す |
+| `pin_plot` | 現在の図・条件・AI注釈を比較Canvasへピン留めする |
+| `list_pinned_plots` | ピンの一覧とスナップショットのPlotly resource URIを取得する |
+| `unpin_plot` | 指定したピンを解除する |
 | `run_matlab_background` | backgroundPoolでコードを実行し、ジョブIDを即時に返す |
 | `run_matlab_worker` | 再利用するプロセスworkerでコードを実行する |
 | `get_matlab_job` | 状態・ログ・エラー・出力変数を取得する |
@@ -213,8 +221,8 @@ HTTPでのローカル接続は`node server.ts "path/to/project" --http 8732`。
 
 `.codex-plugin/plugin.json`とルートの`.mcp.json`、`skills/`が一つのPluginパッケージになる。
 CodexのMCP起動待ち時間を同梱するため、[公式に対応しているCodex形式](https://developers.openai.com/plugins/build/plugins)を使う。
-`open_browser`だけにサイドバーと会話パネルのentrypointと`ui://result-store/browser.html`を宣言する。
-通常の検索・配列取得・`render_plot`はMCP Apps UIを開かない。閲覧画面は明示的に開き、既に開いている画面を使い回す。
+`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.4.html`を返し、図の取得と同時に閲覧画面へ表示する。
+連続したモデルの表示要求には同じUIセッションIDを返す。通常の検索・配列取得では画面を開かない。UIのタブ再利用はホストの対応に依存する。
 
 保存先はセットアップ用Skillが設定する。手動で設定する場合は、インストール先で次を実行する。
 
@@ -233,7 +241,7 @@ node setup.mjs "path/to/project"
 ローカルPluginをキャッシュへコピーするホストでは、元のチェックアウトを更新しただけでは
 反映されない。Marketplaceの更新・Pluginの再インストールを使う。
 
-Plotヘッダーの「コンテキストに追加」を押すと、その時点の結果のメタデータとPNGを`ui/update-model-context`で渡す。閲覧・Sweep・選択解除ではコンテキストを変更せず、PNGも生成しない。質問ボタンは現在の図をコンテキストに追加してから、`openai/message`の`send: false`で会話の下書きを作る。[公式のExtension仕様](https://developers.openai.com/plugins/build/extensions)に沿った実装。
+Plotヘッダーの「コンテキストに追加」を押すと、その時点のディレクトリ・結果のメタデータとPNGを`ui/update-model-context`で渡す。閲覧・Sweep・選択解除・ピン留めだけではコンテキストを変更せず、PNGも生成しない。[公式のExtension仕様](https://developers.openai.com/plugins/build/extensions)に沿った実装。
 
 AIの注釈は`annotate_plot`に一覧を渡して設定する。座標はデータの単位で、`xaxis`・`yaxis`はPlotlyの軸名（`x`・`y`、`x2`・`y2`など）を指定する。省略時は`x`・`y`。一覧全体を置き換え、`annotations: []`でAI注釈を消す。元のPlot関数の注釈は保持する。
 

@@ -1,7 +1,10 @@
 # MCPで保存結果を読む・解析する
 
-閲覧画面は同じ会話で基本1つを使う。通常のデータ取得・注釈ツールは閲覧画面を開かない。ユーザーが画面を開くよう依頼したときだけ
-`open_browser`を使う。既に開いている画面を使い、データ取得のたびに画面を追加しない。
+閲覧画面は同じ会話で基本1つを使う。`render_plot`は図の取得と同時にMatlabResults画面にも表示するため、続けて`open_browser`を呼ぶ必要はない。
+図を指定せず閲覧画面だけを開くときは`open_browser`を使う。検索・配列取得・注釈のために画面を追加しない。
+
+保存先は各ツールの`directory`に任意の絶対パスを渡して指定する。直下に`results/store.sqlite`が必要。省略時は設定済みの既定フォルダを使う。
+`list_stores({directory: "絶対パス"})`でそのフォルダ自身と直下の子フォルダにある保存先を探せる。画面のDirectory欄でも切り替えられ、既定の設定を書き換えない。特定のプロジェクト名には依存しない。
 
 1. `list_schemes`で対象の保存先、Scheme、Key、Value、Plot、件数を確認する。
 2. `search_results`の`filters`に条件を指定し、比較対象のRowIdを確定する。
@@ -11,11 +14,15 @@
    表示ラベルから配列を復元しない。`not_in`は「すべて」の候補から指定値を除外する。
 3. `get_result`で条件とValueの型・サイズを確認する。
 4. `render_plot`で登録済みPlotのPNGを見る。図の軸・単位・正規化を確かめて解釈する。
-   描画完了後、同じ保存先を開いている既存のMatlabResults画面にも対象が反映される。画面を開き直す必要はない。
+   描画完了後、MatlabResults画面に対象が表示される。連続した表示は同じUIセッションを使う。別ディレクトリでも`directory`を指定すれば切り替わる。
    描画専用MATLABで元のPlot関数を実行し、描画された線・軸からブラウザの図を生成する。
    既存の有効なfig2plotly出力も使える。`source: cache`はNodeキャッシュ、`source: live`は共有MATLAB。
    `preview_available: false`の場合はPNGを見たと主張しない。画像が必要なら`refresh: true`で取得する。
 5. 精密な数値が必要なときだけ、`get_result`の`include_values`に必要なValueを指定する。
+
+比較する図は`pin_plot`に`directory`・`scheme`・`row_id`・`plot_index`を渡してピン留めできる。画面ではPlotヘッダーの「Pin」を使う。
+ページ下部のPinned Canvasに図が並び、別Scheme・別ディレクトリへ移っても残る。ピンは図・保存条件・その時点のAI注釈を固定したスナップショットで、元の結果の更新には追従しない。同じ保存payloadを再びピン留めしても重複しない。
+`list_pinned_plots`は一覧と図のresource URIを返し、`unpin_plot({pin_id: "..."})`は指定したピンだけを解除する。通常のPlotキャッシュと異なり、ピンは個人用設定と同じ場所の`pins/`に保存される。
 
 図の解釈を示すには`annotate_plot`を使う。`point_label`は`x`・`y`・`text`、`xline`は`x`、`yline`は`y`を指定し、線にも`text`を付けられる。
 座標はデータ単位。`xaxis`・`yaxis`は対象のsubplotのPlotly軸名を指定する（省略時`x`・`y`）。軸の対応はPlotly JSONで確認する。
@@ -27,7 +34,7 @@ RowIdは十進文字列で渡す。配列はMATLABの列優先順で、複素数
 `slice.start`は**0始まり**、`slice.count`は各次元の要素数。次元の順序はMATLABの
 `shape`と同じ。取得上限は既定4096要素、最大16384要素。NaN/Infと64bit整数は文字列。
 
-「コンテキストに追加」または質問ボタンを押すと、その時点のScheme・RowId・Plot・条件と図の画像が添付される。
+「コンテキストに追加」を押すと、その時点のディレクトリ・Scheme・RowId・Plot・条件と図の画像が添付される。
 閲覧やSweepでは添付内容は自動更新されない。添付された選択を対象として回答する。別結果を参照するときはそのRowIdを明示する。
 画像に表示されない履歴や成分は補わない。小さい数値の差は元データで確認する。
 
@@ -65,6 +72,8 @@ GUIはFixed条件でテーブルと各パラメータの候補を絞り、Parame
 
 `cancel_matlab_job`の`cancel_requested`は中止要求であり、中止完了ではない。最終状態を確認する。実行済みのファイル書き込みは巻き戻らない。保存結果の解析という依頼だけで、solver・Scheme・元データの書き換えを実行しない。
 
-ホストがMCP Eventsに対応する場合、`events/subscribe`で`matlab.job.finished`と`{"job_id":"<ID>"}`を購読する。通知は成功・失敗・中止の最終状態と結果URIを含む。通知を受けてから`get_matlab_job`でログ・値を読む。ホストが用意したwebhookを使い、AIが自分でcallbackや署名secretを作って自動再開を装わない。
+ホストがMCP Eventsに対応する場合、`events/subscribe`で`matlab.job.finished`と`{"job_id":"<ID>"}`を購読する。既定以外の保存先のジョブでは購読引数にも`directory`を渡す。通知は成功・失敗・中止の最終状態と結果URIを含む。通知を受けてから`get_matlab_job`でログ・値を読む。ホストが用意したwebhookを使い、AIが自分でcallbackや署名secretを作って自動再開を装わない。
 
 公式の対応先はWork web、Work Cloud、Dots。ローカルCodexの自動再開は未確認で、非対応ホストでは`get_matlab_job`を使う。ジョブ状態・出力・未送信通知はOSの一時フォルダに保存され、MCP再接続では維持する。MATLABが終了した実行中ジョブは失敗になる。OSによる一時ファイルの清掃後まで保持する保証はない。
+
+MCPプロセス再起動後、既定以外の保存先のジョブ監視は、その`directory`を指定したジョブ取得・一覧・購読などの操作で再開する。

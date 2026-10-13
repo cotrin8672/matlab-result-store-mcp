@@ -43,7 +43,8 @@ export class MatlabJobs {
   private record(id: string, owner?: string): Job {
     const row = this.db.prepare('SELECT owner, data FROM jobs WHERE id=?').get(id) as Record | undefined;
     if (!row || (owner !== undefined && row.owner !== owner)) throw new Error('Unknown MATLAB Job.');
-    return JSON.parse(row.data);
+    const job = JSON.parse(row.data) as Job;
+    return { ...job, result_uri: `matlab-results://jobs/${job.job_id}?directory=${encodeURIComponent(this.root)}` };
   }
 
   private save(job: Job) { this.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(JSON.stringify(job), job.job_id); }
@@ -57,7 +58,7 @@ export class MatlabJobs {
     writeFileSync(path.join(folder, `${functionName}.m`), `function mcp_outputs = ${functionName}()\nroot = string(${quote(this.root)});\n${code}\nmcp_outputs = struct(${fields});\nend\n`, { mode: 0o600 });
     writeFileSync(path.join(folder, 'request.json'), JSON.stringify({ job_id: id, backend, function_name: functionName, outputs }), { mode: 0o600 });
     const job: Job = { job_id: id, backend, state: 'queued', created_at: created, updated_at: created,
-      outputs, result_uri: `matlab-results://jobs/${id}` };
+      outputs, result_uri: `matlab-results://jobs/${id}?directory=${encodeURIComponent(this.root)}` };
     this.db.prepare('INSERT INTO jobs VALUES (?, ?, ?)').run(id, owner, JSON.stringify(job));
     this.submit(job);
     return job;
