@@ -17,7 +17,7 @@ token = char(java.util.UUID.randomUUID());
 folder = fullfile(string(tempdir), "result-store-" + token);
 mkdir(folder);
 descriptor = fullfile(root, "results", "web", descriptorName);
-writeJson(descriptor, struct('version', 1, 'folder', folder, 'token', token, 'pid', feature('getpid'), 'jobs', true));
+writeJson(descriptor, struct('version', 1, 'folder', folder, 'token', token, 'pid', feature('getpid'), 'jobs', true, 'parallel_jobs', true));
 fig = [];
 activeFunction = [];
 activePayload = "";

@@ -355,7 +355,7 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (token !== request) return;
   note('Plotを読み込み中…');
   const args = { directory: catalog.directory, scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
-  const response = reply ?? await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh },
+  const response = reply?._meta?.plot_update ? reply : await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh },
     _meta: { 'matlab-results/browser': true } });
   const artifact = data<Artifact>(response);
   if (token !== request) return;

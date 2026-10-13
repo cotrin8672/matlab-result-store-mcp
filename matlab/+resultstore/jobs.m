@@ -1,5 +1,5 @@
 function reply = jobs(operation, request)
-% Futures keep execution off the Plot worker's main thread.
+% Futures and batch Jobs keep execution off the Plot worker's main thread.
 persistent pending lastPoll
 if isempty(pending), pending = containers.Map('KeyType', 'char', 'ValueType', 'any'); end
 reply = struct();
@@ -18,14 +18,32 @@ if operation == "submit"
     end
     if isKey(pending, id), return; end
     job = jsondecode(fileread(fullfile(folder, 'request.json')));
-    if ~strcmp(job.job_id, id) || ~ismember(string(job.backend), ["background", "worker"])
+    if ~strcmp(job.job_id, id) || ~ismember(string(job.backend), ["background", "worker", "parallel"])
         error('resultstore:InvalidJob', 'Invalid Job request.');
     end
+    if strcmp(job.backend, 'parallel')
+        validateattributes(job.workers, {'double'}, {'scalar', 'integer', 'positive', 'finite'});
+    end
     statusFile = fullfile(folder, 'status.json');
-    if isfile(statusFile), return; end
-    status = struct('state', 'queued', 'pid', feature('getpid'), 'updated_at', nowUtc());
+    future = [];
+    if isfile(statusFile)
+        status = jsondecode(fileread(statusFile));
+        if ~strcmp(job.backend, 'parallel') || ismember(status.state, {'succeeded', 'failed', 'cancelled'}), return; end
+        if isfield(status, 'matlab_job_id')
+            cluster = parcluster('Processes');
+            cluster.JobStorageLocation = status.job_storage_location;
+            future = findJob(cluster, 'ID', status.matlab_job_id);
+            if numel(future) ~= 1
+                error('resultstore:BatchJobMissing', 'Cannot recover MATLAB batch Job %g. The computation was not resubmitted.', status.matlab_job_id);
+            end
+        end
+        status.pid = feature('getpid');
+        status.updated_at = nowUtc();
+    else
+        status = struct('state', 'queued', 'pid', feature('getpid'), 'updated_at', nowUtc());
+    end
     writeJson(statusFile, status);
-    pending(id) = struct('folder', folder, 'job', job, 'future', [], 'status', status, 'diary', '', 'cancelled', false);
+    pending(id) = struct('folder', folder, 'job', job, 'future', future, 'status', status, 'diary', '', 'cancelled', false);
     return
 end
 if ~isempty(lastPoll) && toc(lastPoll) < .25, return; end
@@ -38,40 +56,57 @@ for k = 1:numel(ids)
         if isfile(fullfile(item.folder, 'cancel'))
             if isempty(item.future)
                 item.status.state = 'cancelled';
-            elseif ~strcmp(item.future.State, 'finished')
+            elseif ~ismember(item.future.State, {'finished', 'failed'})
                 cancel(item.future);
                 item.cancelled = true;
             end
         elseif isempty(item.future)
             addpath(item.folder);
             rehash;
-            if strcmp(item.job.backend, 'background')
-                pool = backgroundPool;
+            if strcmp(item.job.backend, 'parallel')
+                % shortcut: Recovery begins after ID persistence; pre-tag Jobs to cover a crash during submission.
+                item.future = batch(parcluster('Processes'), str2func(item.job.function_name), 1, {}, ...
+                    'Pool', item.job.workers, 'CurrentFolder', item.job.root, 'CaptureDiary', true);
+                item.status.matlab_job_id = item.future.ID;
+                item.status.job_storage_location = item.future.Parent.JobStorageLocation;
+                item.status.updated_at = nowUtc();
+                writeJson(fullfile(item.folder, 'status.json'), item.status);
             else
-                pool = gcp('nocreate');
-                if isempty(pool), pool = parpool('Processes', 1); end
-                if ~isa(pool, 'parallel.ProcessPool')
-                    error('resultstore:WrongPool', 'The MCP MATLAB must use a process pool for run_matlab_worker.');
+                if strcmp(item.job.backend, 'background')
+                    pool = backgroundPool;
+                else
+                    pool = gcp('nocreate');
+                    if isempty(pool), pool = parpool('Processes', 1); end
+                    if ~isa(pool, 'parallel.ProcessPool')
+                        error('resultstore:WrongPool', 'The MCP MATLAB must use a process pool for run_matlab_worker.');
+                    end
                 end
+                item.future = parfeval(pool, str2func(item.job.function_name), 1);
             end
-            item.future = parfeval(pool, str2func(item.job.function_name), 1);
         end
         if ~isempty(item.future)
-            diary = char(item.future.Diary);
+            if strcmp(item.job.backend, 'parallel')
+                diary = char(item.future.Tasks(1).Diary);
+            else
+                diary = char(item.future.Diary);
+            end
             if ~strcmp(diary, item.diary)
                 writeText(fullfile(item.folder, 'stdout.txt'), diary);
                 item.diary = diary;
             end
-            if strcmp(item.future.State, 'finished')
+            state = char(item.future.State);
+            if ismember(state, {'finished', 'failed'})
                 if item.cancelled
                     item.status.state = 'cancelled';
                 else
                     outputs = fetchOutputs(item.future);
+                    if strcmp(item.job.backend, 'parallel'), outputs = outputs{1}; end
                     save(fullfile(item.folder, 'outputs.mat'), '-struct', 'outputs', '-v7.3');
                     item.status.state = 'succeeded';
                 end
             else
-                item.status.state = char(item.future.State);
+                if strcmp(state, 'pending'), state = 'queued'; end
+                item.status.state = state;
             end
         end
     catch exception

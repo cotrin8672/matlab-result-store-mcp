@@ -93,7 +93,7 @@ export class JobEvents {
     server.server.setRequestHandler('events/list', { params: z.object({ cursor: z.null().optional() }).default({}) }, () => ({ events: [{
       name: eventName, description: 'A MATLAB Job completed, failed, or was cancelled. Filter by job_id and pass directory when using a nondefault Store. Retrieve logs and output variables with get_matlab_job.',
       delivery: ['webhook'], inputSchema: z.toJSONSchema(args),
-      payloadSchema: { type: 'object', properties: { job_id: { type: 'string' }, backend: { enum: ['background', 'worker'] },
+      payloadSchema: { type: 'object', properties: { job_id: { type: 'string' }, backend: { enum: ['background', 'worker', 'parallel'] },
         state: { enum: ['succeeded', 'failed', 'cancelled'] }, result_uri: { type: 'string' } },
         required: ['job_id', 'backend', 'state', 'result_uri'], additionalProperties: false },
     }] }));

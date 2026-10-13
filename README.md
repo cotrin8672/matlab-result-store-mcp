@@ -89,9 +89,11 @@ PlotはNode側で最大128件・合計256MiBをLRUキャッシュする。キャ
 
 描画やthread非対応の関数・MEXが必要な場合は`run_matlab_worker`を明示的に選ぶ。R2024aでは`run`・`cd`・`clearvars`もthread非対応なので、既存スクリプトを`run(...)`で呼ぶときはworkerを使う。Parallel Computing Toolboxのプロセスpoolを1 workerで起動し、後続ジョブにも再利用する。追加のMATLABプロセスと初回pool起動の待ち時間が発生する。非対応エラーで自動的に別backendへ再実行はしない。
 
-`get_matlab_job`で状態（queued/running/succeeded/failed/cancelled）、標準出力の末尾65536文字、元のエラーとスタック、出力変数のメタデータを読む。数値は`include_values`と必要に応じて`slice`で取得する。`list_matlab_jobs`はMCP接続をまたいだ一覧、`cancel_matlab_job`はFutureへの中止要求。中止完了は状態で確認し、すでに書かれたファイルは巻き戻さない。コードはユーザーと同じ権限で動くため、実行範囲を確認して使う。
+既存スクリプトの`parfor`・`spmd`には`run_matlab_parallel`を使う。`workers`で並列poolのworker数を明示し、共有MATLABクライアントから`batch`を投入する。計算中もPlotのメインスレッドを使える。`workers`とは別にbatchドライバが1プロセス必要で、Processesプロファイルの上限とCPU・メモリに収める。backgroundPoolやプロセスworker内から`batch`・`parcluster`を呼ぶ必要はない。
 
-ジョブ状態・ログ・出力MATはOSの一時フォルダに保存し、MCP再接続後も取得できる。MATLAB自体が終了すると実行中のジョブは失敗として記録する。コードは関数の本体として実行する。解析スクリプトはworkerで`run(...)`を使い、関数内で使えないスクリプトはそのエラーを確認して呼び出し方を選ぶ。
+`get_matlab_job`で状態（queued/running/succeeded/failed/cancelled）、標準出力の末尾65536文字、元のエラーとスタック、出力変数のメタデータを読む。数値は`include_values`と必要に応じて`slice`で取得する。`list_matlab_jobs`はMCP接続をまたいだ一覧、`cancel_matlab_job`はFutureまたはbatch Jobへの中止要求。中止完了は状態で確認し、すでに書かれたファイルは巻き戻さない。コードはユーザーと同じ権限で動くため、実行範囲を確認して使う。
+
+ジョブ状態・ログ・出力MATはOSの一時フォルダに保存し、MCP再接続後も取得できる。MATLAB自体が終了するとbackground/workerの実行中ジョブは失敗として記録する。parallelは保存したbatch IDから再接続し、計算を再投入しない。コードは関数の本体として実行する。解析スクリプトはworkerまたはparallelで`run(...)`を使い、関数内で使えないスクリプトはそのエラーを確認して呼び出し方を選ぶ。
 
 ### 完了Events
 
@@ -172,6 +174,7 @@ Plotヘッダーの「Pin」で現在の図をページ下部のPinned Canvasに
 | `unpin_plot` | 指定したピンを解除する |
 | `run_matlab_background` | backgroundPoolでコードを実行し、ジョブIDを即時に返す |
 | `run_matlab_worker` | 再利用するプロセスworkerでコードを実行する |
+| `run_matlab_parallel` | クライアントからbatchを投入し、指定したworker数でparfor/spmdを実行する |
 | `get_matlab_job` | 状態・ログ・エラー・出力変数を取得する |
 | `list_matlab_jobs` | 保存先の最近のジョブを一覧する |
 | `cancel_matlab_job` | キュー内・実行中のジョブの中止を要求する |
@@ -221,8 +224,9 @@ HTTPでのローカル接続は`node server.ts "path/to/project" --http 8732`。
 
 `.codex-plugin/plugin.json`とルートの`.mcp.json`、`skills/`が一つのPluginパッケージになる。
 CodexのMCP起動待ち時間を同梱するため、[公式に対応しているCodex形式](https://developers.openai.com/plugins/build/plugins)を使う。
-`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.4.html`を返し、図の取得と同時に閲覧画面へ表示する。
+`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.5.html`を返し、図の取得と同時に閲覧画面へ表示する。
 連続したモデルの表示要求には同じUIセッションIDを返す。通常の検索・配列取得では画面を開かない。UIのタブ再利用はホストの対応に依存する。
+モデルへの応答には描画配列を含めず、結果情報とresource URIを返す。UI自身がキャッシュから描画データを取得し、UIからの更新要求では差分送信を使う。大きなモデル応答でタブ再利用用メタデータが失われる問題を避ける。
 
 保存先はセットアップ用Skillが設定する。手動で設定する場合は、インストール先で次を実行する。
 

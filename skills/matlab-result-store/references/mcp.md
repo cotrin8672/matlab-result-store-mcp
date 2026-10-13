@@ -68,12 +68,16 @@ GUIはFixed条件でテーブルと各パラメータの候補を絞り、Parame
 
 描画やthread非対応関数・MEXが必要なときは`run_matlab_worker`を使う。R2024aの`run`・`cd`・`clearvars`はthread非対応なので、既存スクリプトもworkerで`run(...)`を使う。Parallel Computing Toolboxが必要で、追加のプロセスworkerを1つ起動・再利用する。失敗後にbackendを変えて再実行すると副作用が重複することがあるため、エラーと実行内容を確認して選ぶ。
 
+既存スクリプトの`parfor`・`spmd`を実際に並列実行するには`run_matlab_parallel`を使い、`directory`・`code`・`outputs`に加え、プールのworker数`workers`を明示する。共有MATLABのクライアントから`batch`を投入するので、計算中もPlotのメインスレッドを使える。`run_matlab_worker`の中から`batch`や`parcluster`を呼ばない。
+`workers`とは別にbatchドライバが1プロセス必要。Processesプロファイルの上限と空きCPU・メモリに収める。ジョブの状態・ログ・出力・キャンセル・Eventsは他の実行ツールと同じ。監視MATLABが終了した場合は保存したbatch IDから再接続し、同じ計算を再投入しない。
+旧バージョンのMCP描画用MATLABは、実行中のMCPジョブがないときだけ自動で更新する。対話・CLIの計算用MATLABには触れない。
+
 `get_matlab_job`は即時に状態・標準出力の末尾65536文字・エラー・出力メタデータを返す。状態はqueued/running/succeeded/failed/cancelled。成功した変数だけを`include_values`で取得し、大きい配列は`slice`で絞る。列優先順、複素数、64bit整数、取得上限は`get_result`と同じ。`list_matlab_jobs`でMCP接続をまたいだ最近のジョブを確認できる。
 
 `cancel_matlab_job`の`cancel_requested`は中止要求であり、中止完了ではない。最終状態を確認する。実行済みのファイル書き込みは巻き戻らない。保存結果の解析という依頼だけで、solver・Scheme・元データの書き換えを実行しない。
 
 ホストがMCP Eventsに対応する場合、`events/subscribe`で`matlab.job.finished`と`{"job_id":"<ID>"}`を購読する。既定以外の保存先のジョブでは購読引数にも`directory`を渡す。通知は成功・失敗・中止の最終状態と結果URIを含む。通知を受けてから`get_matlab_job`でログ・値を読む。ホストが用意したwebhookを使い、AIが自分でcallbackや署名secretを作って自動再開を装わない。
 
-公式の対応先はWork web、Work Cloud、Dots。ローカルCodexの自動再開は未確認で、非対応ホストでは`get_matlab_job`を使う。ジョブ状態・出力・未送信通知はOSの一時フォルダに保存され、MCP再接続では維持する。MATLABが終了した実行中ジョブは失敗になる。OSによる一時ファイルの清掃後まで保持する保証はない。
+公式の対応先はWork web、Work Cloud、Dots。ローカルCodexの自動再開は未確認で、非対応ホストでは`get_matlab_job`を使う。ジョブ状態・出力・未送信通知はOSの一時フォルダに保存され、MCP再接続では維持する。MATLABが終了したbackground/workerの実行中ジョブは失敗になる。OSによる一時ファイルの清掃後まで保持する保証はない。
 
 MCPプロセス再起動後、既定以外の保存先のジョブ監視は、その`directory`を指定したジョブ取得・一覧・購読などの操作で再開する。

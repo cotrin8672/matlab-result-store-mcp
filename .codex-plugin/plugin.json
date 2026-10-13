@@ -1,6 +1,6 @@
 {
   "name": "matlab-result-store",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Search MATLAB results, discuss cached interactive plots, and run asynchronous MATLAB analysis.",
   "author": { "name": "cotrin8672" },
   "repository": "https://github.com/cotrin8672/matlab-result-store-mcp",
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "MATLAB Result Store",
     "shortDescription": "保存結果の検索・描画とMATLABでの非同期解析",
-    "longDescription": "保存済みのMATLAB Result Storeを検索・閲覧し、backgroundPoolまたはプロセスworkerで解析する。セットアップで保存フォルダを指定する。Node.js 24以上とpnpmまたはnpmを使用する。",
+    "longDescription": "保存済みのMATLAB Result Storeを検索・閲覧し、backgroundPool・プロセスworker・並列batchで解析する。Directoryで保存フォルダを切り替え、Plotをピン留めして比較できる。Node.js 24以上とpnpmまたはnpmを使用する。",
     "developerName": "cotrin8672",
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/icon.svg",

@@ -5,8 +5,9 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { applyPlotUpdate, type PlotState, type PlotUpdate } from './plots.ts';
 import { ensureWorker, running } from './worker.ts';
+import { matlabJobs } from './jobs.ts';
 
-type Session = { version: number; folder: string; token: string; pid: number; jobs?: boolean };
+type Session = { version: number; folder: string; token: string; pid: number; jobs?: boolean; parallel_jobs?: boolean };
 type Reply = { error?: string; payload: string; plot_name: string; update: PlotUpdate; preview?: string; timings: Record<string, number> };
 export type Saved = Reply & PlotState & { scheme: string; row_id: string; plot_index: number };
 
@@ -45,12 +46,13 @@ export class LivePlots {
   async submitJob(args: Record<string, unknown>) {
     let session = await this.session();
     if (!session) throw new Error('MATLAB worker is unavailable.');
-    if (!session.jobs) {
-      // The old MCP-owned Plot worker has no Job handler; replace it once on upgrade.
+    if (!session.jobs || args.parallel === true && !session.parallel_jobs) {
+      if (matlabJobs(this.root).hasActiveJobs(String(args.job_id))) throw new Error('The MCP Plot worker needs an update for this backend. Wait for its other MATLAB Jobs to finish, then retry.');
+      // Replace only an idle MCP-owned Plot worker; interactive and CLI calculation sessions are independent.
       try { process.kill(session.pid); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
       session = await ensureWorker(this.root, async () => {
-        const next = await this.readSession(); return next?.jobs ? next : undefined;
+        const next = await this.readSession(); return next?.jobs && (args.parallel !== true || next.parallel_jobs) ? next : undefined;
       });
     }
     return this.send<{ error?: string }>(session, { operation: 'job', ...args });

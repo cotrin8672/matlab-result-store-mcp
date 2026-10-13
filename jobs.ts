@@ -10,9 +10,10 @@ import { JobEvents } from './events.ts';
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type Job = {
-  job_id: string; backend: 'background' | 'worker'; state: JobState;
+  job_id: string; backend: 'background' | 'worker' | 'parallel'; state: JobState;
   created_at: string; updated_at: string; finished_at?: string; pid?: number;
-  outputs: string[]; result_uri: string;
+  outputs: string[]; result_uri: string; workers?: number;
+  matlab_job_id?: number; job_storage_location?: string;
   error?: { identifier: string; message: string; stack?: unknown };
 };
 type Record = { owner: string; data: string };
@@ -49,16 +50,18 @@ export class MatlabJobs {
 
   private save(job: Job) { this.db.prepare('UPDATE jobs SET data=? WHERE id=?').run(JSON.stringify(job), job.job_id); }
 
-  async start(backend: Job['backend'], code: string, outputs: string[], owner: string) {
+  async start(backend: Job['backend'], code: string, outputs: string[], owner: string, workers?: number) {
+    if (backend === 'parallel' && (!Number.isSafeInteger(workers) || workers! < 1)) throw new Error('Parallel MATLAB Jobs require a positive integer workers count.');
     const id = randomUUID(), folder = path.join(this.folder, id), created = new Date().toISOString();
     mkdirSync(folder, { mode: 0o700 });
     const functionName = 'mcp_job_' + id.replaceAll('-', '_');
     const quote = (text: string) => "'" + text.replaceAll("'", "''") + "'";
     const fields = outputs.map(name => `${quote(name)},{${name}}`).join(',');
     writeFileSync(path.join(folder, `${functionName}.m`), `function mcp_outputs = ${functionName}()\nroot = string(${quote(this.root)});\n${code}\nmcp_outputs = struct(${fields});\nend\n`, { mode: 0o600 });
-    writeFileSync(path.join(folder, 'request.json'), JSON.stringify({ job_id: id, backend, function_name: functionName, outputs }), { mode: 0o600 });
+    writeFileSync(path.join(folder, 'request.json'), JSON.stringify({ job_id: id, backend, function_name: functionName, outputs,
+      ...(backend === 'parallel' ? { workers, root: this.root } : {}) }), { mode: 0o600 });
     const job: Job = { job_id: id, backend, state: 'queued', created_at: created, updated_at: created,
-      outputs, result_uri: `matlab-results://jobs/${id}?directory=${encodeURIComponent(this.root)}` };
+      outputs, result_uri: `matlab-results://jobs/${id}?directory=${encodeURIComponent(this.root)}`, ...(backend === 'parallel' ? { workers } : {}) };
     this.db.prepare('INSERT INTO jobs VALUES (?, ?, ?)').run(id, owner, JSON.stringify(job));
     this.submit(job);
     return job;
@@ -69,9 +72,11 @@ export class MatlabJobs {
     if (this.submissions.has(id)) return;
     this.submissions.add(id);
     // The persistent ID is returned before MATLAB starts up or creates a process pool.
-    void livePlots(this.root).submitJob({ job_id: id, folder }).catch(error => {
+    void livePlots(this.root).submitJob({ job_id: id, folder, parallel: job.backend === 'parallel' }).catch(error => {
       const current = this.record(id);
-      if (finished(current) || readJson(path.join(folder, 'status.json')) || error.name === 'TimeoutError') return;
+      const status = readJson(path.join(folder, 'status.json')) as Partial<Job> | undefined;
+      if (finished(current) || error.name === 'TimeoutError') return;
+      if (status && (finished({ ...current, ...status }) || current.backend !== 'parallel' || !status.pid || running(status.pid))) return;
       const now = new Date().toISOString();
       this.save({ ...current, state: 'failed', updated_at: now, finished_at: now,
         error: { identifier: 'resultstore:SubmissionFailed', message: error.message } });
@@ -86,9 +91,12 @@ export class MatlabJobs {
       if (status) {
         job = { ...job, ...status };
         if (!finished(job) && job.pid && !running(job.pid)) {
-          const now = new Date().toISOString();
-          job = { ...job, state: 'failed', updated_at: now, finished_at: now,
-            error: { identifier: 'resultstore:WorkerExited', message: 'The MCP MATLAB process exited before this Job finished.' } };
+          if (job.backend === 'parallel') this.submit(job);
+          else {
+            const now = new Date().toISOString();
+            job = { ...job, state: 'failed', updated_at: now, finished_at: now,
+              error: { identifier: 'resultstore:WorkerExited', message: 'The MCP MATLAB process exited before this Job finished.' } };
+          }
         }
         this.save(job);
       } else this.submit(job);
@@ -110,6 +118,10 @@ export class MatlabJobs {
   list(owner: string, limit: number) {
     const rows = this.db.prepare('SELECT id FROM jobs WHERE owner=? ORDER BY rowid DESC LIMIT ?').all(owner, limit) as { id: string }[];
     return { jobs: rows.map(row => this.sync(row.id)) };
+  }
+
+  hasActiveJobs(exceptId: string) {
+    return this.db.prepare("SELECT 1 FROM jobs WHERE id<>? AND json_extract(data, '$.state') IN ('queued', 'running') LIMIT 1").get(exceptId) !== undefined;
   }
 
   cancel(id: string, owner: string) {

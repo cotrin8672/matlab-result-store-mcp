@@ -47,12 +47,12 @@ export function createServer(root?: string): McpServer {
     const scope = browserScope(context);
     return scope ? `result-store://browser/${scope}/state` : 'result-store://browser/state';
   };
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.4.0' }, {
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.0' }, {
     cacheHints: { 'server/discover': { ttlMs: 300000, cacheScope: 'private' }, 'tools/list': { ttlMs: 300000, cacheScope: 'private' } },
   });
   const getJobs = (directory?: string) => matlabJobs(getStore(directory).root);
   JobEvents.register(server, directory => getJobs(directory).events);
-  const uiUri = 'ui://result-store/browser-v0.4.html';
+  const uiUri = 'ui://result-store/browser-v0.5.html';
   const pins = new PlotPins();
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const directory = z.string().min(1).refine(path.isAbsolute, 'directory must be an absolute path.').optional()
@@ -92,9 +92,14 @@ export function createServer(root?: string): McpServer {
     inputSchema: runInput, annotations: executeAnnotations,
   }, async (a, context) => jobResult(a.directory, await getJobs(a.directory).start('background', a.code, a.outputs, jobOwner(context))));
   server.registerTool('run_matlab_worker', {
-    description: 'Start MATLAB code asynchronously on one reusable Processes pool worker, separate from the Plot main thread. Requires Parallel Computing Toolbox; the single process worker starts only when needed, with an initial pool startup delay. Use for graphics or MEX/functions unsupported by backgroundPool. Return a Job ID immediately. Retrieve status/logs/errors/outputs with get_matlab_job or subscribe to matlab.job.finished. Execution does not use an interactive calculation session.',
+    description: 'Start MATLAB code asynchronously on one reusable Processes pool worker, separate from the Plot main thread. Requires Parallel Computing Toolbox; the single process worker starts only when needed, with an initial pool startup delay. Use for graphics or MEX/functions unsupported by backgroundPool. For parfor/spmd or scripts that launch parallel jobs, use run_matlab_parallel instead; process workers cannot submit local cluster jobs. Return a Job ID immediately. Retrieve status/logs/errors/outputs with get_matlab_job or subscribe to matlab.job.finished. Execution does not use an interactive calculation session.',
     inputSchema: runInput, annotations: executeAnnotations,
   }, async (a, context) => jobResult(a.directory, await getJobs(a.directory).start('worker', a.code, a.outputs, jobOwner(context))));
+  server.registerTool('run_matlab_parallel', {
+    description: 'Start an asynchronous MATLAB batch Job from the shared client MATLAB, with an explicit Processes pool for parfor or spmd in existing scripts. workers is the parfor pool size; MATLAB also starts one batch driver process. The Plot main thread remains available after submission. Requires Parallel Computing Toolbox and capacity in the Processes profile. Do not call batch/parcluster from run_matlab_worker or run_matlab_background. Retrieve logs, errors and outputs with get_matlab_job; cancel with cancel_matlab_job or subscribe to matlab.job.finished.',
+    inputSchema: runInput.extend({ workers: z.number().int().min(1).max(128).describe('Number of Processes pool workers for parfor/spmd. One additional batch driver is required; choose within available CPU/memory and the cluster profile capacity.') }),
+    annotations: executeAnnotations,
+  }, async (a, context) => jobResult(a.directory, await getJobs(a.directory).start('parallel', a.code, a.outputs, jobOwner(context), a.workers)));
   server.registerTool('get_matlab_job', {
     description: 'Read an asynchronous MATLAB Job without waiting for it to finish. Returns queued/running/succeeded/failed/cancelled, console log (last 65,536 characters), error identifier/stack and output metadata. Read selected numeric/logical variables with include_values; arrays use the same exact complex/64-bit representation and zero-based MATLAB-dimension slicing as get_result. Jobs and output files survive MCP reconnects; results are kept in the OS temporary folder.',
     inputSchema: z.object({ directory, job_id: jobId, include_values: z.array(z.string()).default([]),
@@ -106,7 +111,7 @@ export function createServer(root?: string): McpServer {
     inputSchema: z.object({ directory, limit: z.number().int().min(1).max(100).default(20) }), annotations,
   }, async (a, context) => jobResult(a.directory, getJobs(a.directory).list(jobOwner(context), a.limit)));
   server.registerTool('cancel_matlab_job', {
-    description: 'Request cancellation of a MATLAB Future, including a queued Job. cancel_requested means the request is pending; get_matlab_job confirms the final state. Already finished Jobs are unchanged. Code that has already written files is not rolled back.',
+    description: 'Request cancellation of a MATLAB Future or parallel batch Job, including a queued Job. cancel_requested means the request is pending; get_matlab_job confirms the final state. Already finished Jobs are unchanged. Code that has already written files is not rolled back.',
     inputSchema: z.object({ directory, job_id: jobId }), annotations: { ...executeAnnotations, idempotentHint: true },
   }, async (a, context) => jobResult(a.directory, getJobs(a.directory).cancel(a.job_id, jobOwner(context))));
   const readJob: Parameters<typeof server.registerResource>[3] = async (uri, vars, context) => {
@@ -237,9 +242,9 @@ export function createServer(root?: string): McpServer {
     inputSchema: z.object({ directory, scheme, row_id: rowId, plot_index: plotIndex,
       include_preview: z.boolean().default(true), known_revision: z.string().optional(), refresh: z.boolean().default(false) }), annotations,
   }, async (a, context) => {
-    const store = getStore(a.directory);
+    const store = getStore(a.directory), browserCall = context.mcpReq._meta?.['matlab-results/browser'] === true;
     function completed(reply: CallToolResult, revision: string) {
-      if (context.mcpReq._meta?.['matlab-results/browser'] !== true) showInBrowser(browserRoot(), { directory: store.root, scheme: a.scheme, row_id: a.row_id, plot_index: a.plot_index }, 'plot', revision, browserScope(context));
+      if (!browserCall) showInBrowser(browserRoot(), { directory: store.root, scheme: a.scheme, row_id: a.row_id, plot_index: a.plot_index }, 'plot', revision, browserScope(context));
       return uiResult({ ...reply, structuredContent: { ...(reply.structuredContent as Record<string, unknown>), browser_state_uri: browserUri(context) } });
     }
     const backend = await plotBackend(store, a.scheme, a.row_id, a.plot_index, a.refresh);
@@ -250,13 +255,14 @@ export function createServer(root?: string): McpServer {
       const row = store.record(scheme, a.row_id);
       if (rendered.payload !== row.__store_payload) throw new Error('The saved result changed during rendering. Refresh the Plot.');
       if (!backend.cached) plotCache(store.root).put(rendered);
-      const update = plotCache(store.root).update(rendered, a.known_revision);
+      // Large model replies lose typed metadata in desktop transport; the UI fetches its own incremental data.
+      const update = browserCall ? plotCache(store.root).update(rendered, a.known_revision) : undefined;
       const reply = result({ directory: store.root, scheme: a.scheme, ...store.row(scheme, row), plot_index: a.plot_index,
         plot_name: rendered.plot_name, payload: rendered.payload, source: backend.cached ? 'cache' : 'live', revision: rendered.revision,
         preview_available: !!rendered.preview,
         timings: rendered.timings, plot_annotations: readAnnotations(store, a.scheme, a.row_id, a.plot_index, rendered.payload),
         html_uri: uri('plot.html'), plotly_uri: uri('plot.json'), annotations_uri: uri('annotations.json') });
-      return completed({ ...reply, _meta: { plot_update: update }, content: [
+      return completed({ ...reply, ...(update ? { _meta: { plot_update: update } } : {}), content: [
         ...reply.content,
         ...(a.include_preview && rendered.preview ? [{ type: 'image' as const, mimeType: 'image/png', data: rendered.preview }] : []),
         { type: 'resource_link' as const, uri: uri('plot.html'), name: 'Interactive Plot', mimeType: 'text/html' },
