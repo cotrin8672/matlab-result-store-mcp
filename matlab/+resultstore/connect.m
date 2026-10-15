@@ -1,12 +1,17 @@
-function connection = connect(root, descriptorName)
+function connection = connect(root, descriptorName, descriptor)
 % Serve registered Plots from this MATLAB session; no engine is launched.
 arguments
     root (1, 1) string = "."
     descriptorName (1, 1) string = "live.json"
+    descriptor (1, 1) string = ""
 end
 root = string(java.io.File(char(root)).getCanonicalPath());
+initialContext = resultstore.directory(root);
 resultstore.exportCatalog(root);
+clear initialContext
 name = "Result Store: " + root;
+shared = strlength(descriptor) > 0;
+if shared, name = "Result Store: shared"; end
 connection = timerfindall('Name', name);
 if ~isempty(connection) && connection(1).Running == "on"
     connection = connection(1);
@@ -16,8 +21,8 @@ if ~isempty(connection), delete(connection); end
 token = char(java.util.UUID.randomUUID());
 folder = fullfile(string(tempdir), "result-store-" + token);
 mkdir(folder);
-descriptor = fullfile(root, "results", "web", descriptorName);
-writeJson(descriptor, struct('version', 1, 'folder', folder, 'token', token, 'pid', feature('getpid'), 'jobs', true, 'parallel_jobs', true));
+if ~shared, descriptor = fullfile(root, "results", "web", descriptorName); end
+writeJson(descriptor, struct('version', 1 + double(shared), 'folder', folder, 'token', token, 'pid', feature('getpid'), 'jobs', true, 'parallel_jobs', true));
 fig = [];
 activeFunction = [];
 activePayload = "";
@@ -25,6 +30,7 @@ activeInputs = strings(1, 0);
 activeArgs = {};
 activeScheme = "";
 activeRow = uint64(0);
+activeRoot = "";
 previous = [];
 revision = "";
 renderedKey = "";
@@ -44,8 +50,27 @@ start(connection);
                 delete(requestFile);
                 return
             end
+            if isfield(request, 'operation') && ismember(string(request.operation), ["status", "shutdown"])
+                reply = resultstore.jobs("status", struct());
+                reply.pid = feature('getpid');
+                if strcmp(request.operation, 'shutdown') && reply.active_jobs > 0
+                    error('resultstore:WorkerBusy', 'The shared MATLAB has active Jobs. Wait for all Directories to finish before restarting it.');
+                end
+                delete(requestFile);
+                writeJson(responseFile, reply);
+                if strcmp(request.operation, 'shutdown'), stop(connection); end
+                return
+            end
+            requestRoot = root;
+            if shared
+                requestRoot = string(java.io.File(request.root).getCanonicalPath());
+                if ~isfile(fullfile(requestRoot, 'results', 'store.sqlite'))
+                    error('resultstore:InvalidRoot', 'The requested Directory has no results/store.sqlite.');
+                end
+            end
+            requestContext = resultstore.directory(requestRoot);
             if isfield(request, 'operation') && strcmp(request.operation, 'catalog')
-                resultstore.exportCatalog(root);
+                resultstore.exportCatalog(requestRoot);
                 delete(requestFile);
                 writeJson(responseFile, struct());
                 return
@@ -63,21 +88,22 @@ start(connection);
             for digit = char(request.row_id), rowId = rowId * uint64(10) + uint64(digit - '0'); end
             if rowId > uint64(intmax('int64')), error('resultstore:InvalidRowId', 'RowId exceeds SQLite range.'); end
             if request.refresh, rehash; end
-            scheme = store.loadScheme(string(request.scheme), root);
+            scheme = store.loadScheme(string(request.scheme), requestRoot);
             validateattributes(request.plot_index, {'double'}, {'scalar', 'integer', 'positive', '<=', numel(scheme.plots)});
             spec = scheme.plots(request.plot_index);
-            payload = store.getRecordPath(scheme.id, rowId, root);
+            payload = store.getRecordPath(scheme.id, rowId, requestRoot);
             loadTime = tic;
-            if request.refresh || payload ~= activePayload || activeScheme ~= scheme.id || activeRow ~= rowId || ~isequal(spec.Inputs, activeInputs)
-                activeArgs = store.getValue(scheme.id, rowId, spec.Inputs, root);
+            if request.refresh || requestRoot ~= activeRoot || payload ~= activePayload || activeScheme ~= scheme.id || activeRow ~= rowId || ~isequal(spec.Inputs, activeInputs)
+                activeArgs = store.getValue(scheme.id, rowId, spec.Inputs, requestRoot);
                 activePayload = payload;
                 activeInputs = spec.Inputs;
                 activeScheme = scheme.id;
                 activeRow = rowId;
+                activeRoot = requestRoot;
             end
             timings.load_ms = toc(loadTime) * 1000;
             drawTime = tic;
-            key = scheme.id + "/" + string(rowId) + "/" + request.plot_index + ":" + payload;
+            key = requestRoot + "/" + scheme.id + "/" + string(rowId) + "/" + request.plot_index + ":" + payload;
             needsDraw = request.refresh || key ~= renderedKey || ~isequal(activeFunction, spec.Function);
             if isempty(fig) || ~isgraphics(fig)
                 fig = figure('Visible', 'off', 'HandleVisibility', 'off', 'IntegerHandle', 'off', ...
@@ -95,7 +121,7 @@ start(connection);
             timings.draw_ms = toc(drawTime) * 1000;
             captureTime = tic;
             if needsDraw, plot = resultstore.capture(fig); else, plot = previous; end
-            plot.layout.uirevision = char(scheme.id + "/" + request.plot_index);
+            plot.layout.uirevision = char(requestRoot + "/" + scheme.id + "/" + request.plot_index);
             nextRevision = string(java.util.UUID.randomUUID());
             update = resultstore.plotUpdate(previous, plot, revision, nextRevision, string(request.known_revision));
             previous = plot;

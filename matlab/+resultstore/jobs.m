@@ -3,6 +3,10 @@ function reply = jobs(operation, request)
 persistent pending lastPoll
 if isempty(pending), pending = containers.Map('KeyType', 'char', 'ValueType', 'any'); end
 reply = struct();
+if operation == "status"
+    reply.active_jobs = pending.Count;
+    return
+end
 if operation == "submit"
     id = char(request.job_id);
     if isempty(regexp(id, '^[a-f0-9-]{36}$', 'once'))
@@ -18,6 +22,7 @@ if operation == "submit"
     end
     if isKey(pending, id), return; end
     job = jsondecode(fileread(fullfile(folder, 'request.json')));
+    if ~isfield(job, 'root'), job.root = request.root; end
     if ~strcmp(job.job_id, id) || ~ismember(string(job.backend), ["background", "worker", "parallel"])
         error('resultstore:InvalidJob', 'Invalid Job request.');
     end
@@ -61,11 +66,13 @@ for k = 1:numel(ids)
                 item.cancelled = true;
             end
         elseif isempty(item.future)
+            context = resultstore.directory(item.job.root);
             addpath(item.folder);
             rehash;
+            jobFunction = str2func(item.job.function_name);
             if strcmp(item.job.backend, 'parallel')
                 % shortcut: Recovery begins after ID persistence; pre-tag Jobs to cover a crash during submission.
-                item.future = batch(parcluster('Processes'), str2func(item.job.function_name), 1, {}, ...
+                item.future = batch(parcluster('Processes'), @runJob, 1, {jobFunction, item.job.root}, ...
                     'Pool', item.job.workers, 'CurrentFolder', item.job.root, 'CaptureDiary', true);
                 item.status.matlab_job_id = item.future.ID;
                 item.status.job_storage_location = item.future.Parent.JobStorageLocation;
@@ -81,8 +88,13 @@ for k = 1:numel(ids)
                         error('resultstore:WrongPool', 'The MCP MATLAB must use a process pool for run_matlab_worker.');
                     end
                 end
-                item.future = parfeval(pool, str2func(item.job.function_name), 1);
+                if strcmp(item.job.backend, 'background')
+                    item.future = parfeval(pool, jobFunction, 1);
+                else
+                    item.future = parfeval(pool, @runJob, 1, jobFunction, item.job.root);
+                end
             end
+            clear context
         end
         if ~isempty(item.future)
             if strcmp(item.job.backend, 'parallel')
@@ -110,6 +122,7 @@ for k = 1:numel(ids)
             end
         end
     catch exception
+        clear context
         while contains(exception.identifier, 'parallel:') && numel(exception.cause) == 1
             exception = exception.cause{1};
         end
@@ -130,6 +143,11 @@ for k = 1:numel(ids)
         pending(id) = item;
     end
 end
+end
+
+function outputs = runJob(jobFunction, root)
+context = resultstore.directory(root);
+outputs = jobFunction();
 end
 
 function value = nowUtc()

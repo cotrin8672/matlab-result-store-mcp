@@ -39,7 +39,7 @@ RowIdは十進文字列で渡す。配列はMATLABの列優先順で、複素数
 画像に表示されない履歴や成分は補わない。小さい数値の差は元データで確認する。
 
 検索と配列取得はSQLite・MATファイルを直接読む。図やPlot一覧が必要なときだけ、
-MCPが描画専用MATLABを保存先ごとに1つだけ自動起動して共有する。計算用MATLABがBusyでも描画できる。
+MCPが共通のMATLABを1つだけ自動起動し、全チャット・全Directoryで共有する。チャット切り替えやMCP再接続でも同じプロセスを再利用する。要求ごとのDirectoryで関数・作業フォルダを切り替え、配列・Plot・Jobの保存先を混同しない。各DirectoryのResult Storeフレームワークは互換版を使う。計算用MATLABがBusyでも描画できる。
 `resultstore.connect`の手動実行は不要。必要なパスはセットアップSkill・READMEにある。
 オフラインの図が未出力・古い場合は`resultstore.exportPlot(scheme, rowId, plotIndex, root)`でも準備できる。
 

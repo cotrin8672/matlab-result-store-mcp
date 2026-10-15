@@ -58,8 +58,8 @@ export class MatlabJobs {
     const quote = (text: string) => "'" + text.replaceAll("'", "''") + "'";
     const fields = outputs.map(name => `${quote(name)},{${name}}`).join(',');
     writeFileSync(path.join(folder, `${functionName}.m`), `function mcp_outputs = ${functionName}()\nroot = string(${quote(this.root)});\n${code}\nmcp_outputs = struct(${fields});\nend\n`, { mode: 0o600 });
-    writeFileSync(path.join(folder, 'request.json'), JSON.stringify({ job_id: id, backend, function_name: functionName, outputs,
-      ...(backend === 'parallel' ? { workers, root: this.root } : {}) }), { mode: 0o600 });
+    writeFileSync(path.join(folder, 'request.json'), JSON.stringify({ job_id: id, backend, function_name: functionName, outputs, root: this.root,
+      ...(backend === 'parallel' ? { workers } : {}) }), { mode: 0o600 });
     const job: Job = { job_id: id, backend, state: 'queued', created_at: created, updated_at: created,
       outputs, result_uri: `matlab-results://jobs/${id}?directory=${encodeURIComponent(this.root)}`, ...(backend === 'parallel' ? { workers } : {}) };
     this.db.prepare('INSERT INTO jobs VALUES (?, ?, ?)').run(id, owner, JSON.stringify(job));
@@ -118,10 +118,6 @@ export class MatlabJobs {
   list(owner: string, limit: number) {
     const rows = this.db.prepare('SELECT id FROM jobs WHERE owner=? ORDER BY rowid DESC LIMIT ?').all(owner, limit) as { id: string }[];
     return { jobs: rows.map(row => this.sync(row.id)) };
-  }
-
-  hasActiveJobs(exceptId: string) {
-    return this.db.prepare("SELECT 1 FROM jobs WHERE id<>? AND json_extract(data, '$.state') IN ('queued', 'running') LIMIT 1").get(exceptId) !== undefined;
   }
 
   cancel(id: string, owner: string) {

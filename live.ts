@@ -4,8 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { applyPlotUpdate, type PlotState, type PlotUpdate } from './plots.ts';
-import { ensureWorker, running } from './worker.ts';
-import { matlabJobs } from './jobs.ts';
+import { ensureWorker, running, workerDescriptor } from './worker.ts';
 
 type Session = { version: number; folder: string; token: string; pid: number; jobs?: boolean; parallel_jobs?: boolean };
 type Reply = { error?: string; payload: string; plot_name: string; update: PlotUpdate; preview?: string; timings: Record<string, number> };
@@ -23,13 +22,13 @@ export class LivePlots {
 
   private async readSession(): Promise<Session | undefined> {
     let value: Session;
-    try { value = JSON.parse(await readFile(path.join(this.root, 'results/web/worker.json'), 'utf8')); }
+    try { value = JSON.parse(await readFile(workerDescriptor, 'utf8')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     let folder: string;
     try { folder = await realpath(value.folder); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     const relative = path.relative(await realpath(tmpdir()), folder);
-    if (value.version !== 1 || !relative || relative.startsWith('..') || path.isAbsolute(relative) ||
+    if (value.version !== 2 || !relative || relative.startsWith('..') || path.isAbsolute(relative) ||
         !path.basename(folder).startsWith('result-store-') || !/^[a-f0-9-]{36}$/i.test(value.token) || !Number.isInteger(value.pid)) {
       throw new Error('Invalid Plot worker connection.');
     }
@@ -47,10 +46,13 @@ export class LivePlots {
     let session = await this.session();
     if (!session) throw new Error('MATLAB worker is unavailable.');
     if (!session.jobs || args.parallel === true && !session.parallel_jobs) {
-      if (matlabJobs(this.root).hasActiveJobs(String(args.job_id))) throw new Error('The MCP Plot worker needs an update for this backend. Wait for its other MATLAB Jobs to finish, then retry.');
-      // Replace only an idle MCP-owned Plot worker; interactive and CLI calculation sessions are independent.
-      try { process.kill(session.pid); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+      // MATLAB checks Futures from every Directory before stopping the shared worker.
+      await this.send(session, { operation: 'shutdown' });
+      const started = performance.now();
+      while (running(session.pid)) {
+        if (performance.now() - started > 30000) throw new Error('The shared MATLAB is still shutting down. Retry after it exits.');
+        await delay(100);
+      }
       session = await ensureWorker(this.root, async () => {
         const next = await this.readSession(); return next?.jobs && (args.parallel !== true || next.parallel_jobs) ? next : undefined;
       });
@@ -63,7 +65,7 @@ export class LivePlots {
     const temporary = request + '.tmp', started = performance.now();
     let received = false;
     try {
-      await writeFile(temporary, JSON.stringify({ token: session.token, ...args, expires: Date.now() + 30000 }));
+      await writeFile(temporary, JSON.stringify({ token: session.token, root: this.root, ...args, expires: Date.now() + 30000 }));
       await rename(temporary, request);
       let reply: T;
       for (;;) {

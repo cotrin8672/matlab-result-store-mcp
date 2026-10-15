@@ -59,7 +59,7 @@ pnpm build
 
 ## MCP用MATLABを共有する
 
-図やPlot一覧が必要なときに、MCPが保存先ごとに描画専用MATLABを1つだけ自動起動する。別のMCP接続やタブからも同じプロセスを共有する。計算用MATLABには接続しないので、そのセッションがBusyでも保存済み結果を描画できる。手動の`resultstore.connect(root)`は不要。
+図やPlot一覧が必要なときに、MCPが共通のMATLABを1つだけ自動起動する。全チャット・全Directory・別のMCP接続から同じプロセスを共有し、チャット切り替えやMCP再接続で増やさない。各要求のDirectoryで関数・作業フォルダを切り替え、処理後に元へ戻す。各DirectoryのResult Storeフレームワークは互換版を使う。計算用MATLABには接続しないので、そのセッションがBusyでも保存済み結果を描画できる。手動の`resultstore.connect(root)`は不要。
 
 `matlab`をPATH上に置く。フレームワークの`common`は保存先から祖先をたどって検出し、保存先とPluginの`matlab`フォルダをパスに追加する。`common`が別の場所にある場合は、MATLAB標準の`MATLABPATH`に追加する。solverや`store.m`は実行しない。起動は[MATLAB標準の非対話モード](https://www.mathworks.com/help/matlab/ref/matlabwindows.html)を使い、画面を開かない。初回の起動だけ待ち時間がある。
 
@@ -73,8 +73,8 @@ PlotはNode側で最大128件・合計256MiBをLRUキャッシュする。キャ
 
 ブラウザ操作ではPNG・HTMLをMATLABで毎回保存せず、AIへ渡す画像は手動追加時にブラウザで生成する。`render_plot`は既定でPNGも要求するが、PNGを取得していないキャッシュでは`preview_available: false`になり、対話的なPlotだけを返す。PNGが必要なら`refresh: true`で取得する。画像を一度取得するとそれもキャッシュする。
 
-通信にはMATLAB標準のtimerとローカルの一時ファイルを使う。Pythonや追加Toolboxは不要。`results/web/worker.json`には接続情報だけを保存する。起動中のプロセス情報は一時フォルダのSQLiteで共有して重複起動を防ぐ。起動失敗時のログの場所はエラーに表示する。
-旧版の描画専用プロセスが残っている場合は、初回の解析要求時にMCP用プロセスだけを新しいbridgeへ置き換える。
+通信にはMATLAB標準のtimerとローカルの一時ファイルを使う。Pythonや追加Toolboxは不要。接続情報・起動ロック・bridgeは一時フォルダの`result-store-worker-shared`へ置き、Plugin更新で削除されるキャッシュから分離する。全MCP接続で同じSQLite起動ロックを使って同時起動を防ぐ。起動失敗時のログの場所はエラーに表示する。
+実行中のJobはDirectoryをまたいで保持し、どのDirectoryにもJobが残っていないときだけ共有プロセスを終了できる。旧版のDirectory別プロセスは共有接続に使わず、旧MCP接続の更新後、実行中のJobがないことを確認して終了する。
 
 ## 非同期でMATLABを実行する
 

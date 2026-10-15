@@ -23,8 +23,8 @@ description: Set up the installed MATLAB Result Store plugin, prepare its depend
 5. 出力された保存先・Schemeと件数を確認し、完了を伝える。MCPツールが利用できる場合は
    `list_schemes`でも同じ保存先を確認する。まだツールが読み込まれていない場合や保存先を
    切り替えた場合は、新しいチャットでPluginを使うよう案内する。
-6. 図の初回描画と解析には`matlab`がPATH上に必要。MCPが専用MATLABを保存先ごとに1つだけ
-   自動起動して共有する。計算用セッションで`resultstore.connect`を実行する必要はない。
+6. 図の初回描画と解析には`matlab`がPATH上に必要。MCPが専用MATLABを1つだけ
+   自動起動し、全チャット・全Directoryで共有する。計算用セッションで`resultstore.connect`を実行する必要はない。
    フレームワークの`common`は保存先の祖先から自動検出する。別の場所にある場合は
    MATLAB標準の`MATLABPATH`に追加する。solverや`store.m`は実行しない。
 
