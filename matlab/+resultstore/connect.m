@@ -37,6 +37,7 @@ renderedKey = "";
 connection = timer('Name', name, 'ExecutionMode', 'fixedSpacing', 'Period', .02, ...
     'TimerFcn', @receive, 'StopFcn', @disconnect);
 start(connection);
+if shared, connectLegacy(root); end
 
     function receive(~, ~)
         resultstore.jobs("poll", struct());
@@ -67,8 +68,10 @@ start(connection);
                 if ~isfile(fullfile(requestRoot, 'results', 'store.sqlite'))
                     error('resultstore:InvalidRoot', 'The requested Directory has no results/store.sqlite.');
                 end
+                connectLegacy(requestRoot);
             end
             requestContext = resultstore.directory(requestRoot);
+            request.root = char(requestRoot);
             if isfield(request, 'operation') && strcmp(request.operation, 'catalog')
                 resultstore.exportCatalog(requestRoot);
                 delete(requestFile);
@@ -153,6 +156,14 @@ start(connection);
             if strcmp(saved.token, token), delete(descriptor); end
         end
     end
+end
+
+function connectLegacy(root)
+% Old MCP clients omit root, so each old mailbox must stay bound to its Directory.
+% shortcut: Retain visited legacy mailboxes until all old MCP clients reconnect.
+if isempty(timerfindall('Name', "Result Store: " + root))
+    resultstore.connect(root, "worker.json");
+end
 end
 
 function writeJson(file, value)
