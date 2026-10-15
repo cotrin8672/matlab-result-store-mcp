@@ -224,7 +224,7 @@ HTTPでのローカル接続は`node server.ts "path/to/project" --http 8732`。
 
 `.codex-plugin/plugin.json`とルートの`.mcp.json`、`skills/`が一つのPluginパッケージになる。
 CodexのMCP起動待ち時間を同梱するため、[公式に対応しているCodex形式](https://developers.openai.com/plugins/build/plugins)を使う。
-`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.5.2.html`を返し、図の取得と同時に閲覧画面へ表示する。
+`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.5.4.html`を返し、図の取得と同時に閲覧画面へ表示する。
 連続したモデルの表示要求には同じUIセッションIDを返す。通常の検索・配列取得では画面を開かない。UIのタブ再利用はホストの対応に依存する。
 モデルへの応答には描画配列を含めず、結果情報とresource URIを返す。UI自身がキャッシュから描画データを取得し、UIからの更新要求では差分送信を使う。大きなモデル応答でタブ再利用用メタデータが失われる問題を避ける。
 
@@ -234,6 +234,7 @@ Query関数のメニューはホバーとキーボードのフォーカスで動
 縦長・狭幅の画面はPlot、Query／Parameters、Table、Pinned Canvasの順に表示する。Sweepの数値欄は固定幅で、値によって矢印の位置を変えない。
 PlotのAuto／Light／Darkボタンは図だけのテーマを切り替える。Windowsのコピーボタンは表示中の図をSVGとPNG／Bitmapで同時にクリップボードへ渡し、PowerPointなどに貼り付けられる。Windows PowerShellを使い、明示的にボタンを押した場合だけクリップボードを書き換える。
 コピー用スクリプトはMCP起動時にメモリへ保持し、Plugin更新で旧キャッシュが削除されても既存接続からコピーできる。
+コピー中はコピーアイコンをスピナーに切り替え、SVG・PNGの生成とクリップボードへの書き込みが終わるまで表示する。
 
 保存先はセットアップ用Skillが設定する。手動で設定する場合は、インストール先で次を実行する。
 

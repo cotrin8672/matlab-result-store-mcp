@@ -51,6 +51,7 @@ const icons = {
   scheme: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   pin: '<path d="m16 3 5 5-4 1-3 5v4l-8-8h4l5-3Z M3 21l6-6"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+  spinner: '<path d="M12 3a9 9 0 1 1-9 9"/>',
   context: '<path d="M9 18H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6 M3 18v3l5-3 M17 14v8m-4-4h8"/>',
   auto: '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/>',
   light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
@@ -550,7 +551,10 @@ async function plotImages(width = 1100, height = 800) {
 
 async function copyCurrentPlot() {
   const artifact = selected; if (!artifact || !renderedPlot) return;
+  const label = copyButton.getAttribute('aria-label')!, title = copyButton.title;
   copyButton.disabled = true;
+  copyButton.setAttribute('aria-busy', 'true'); copyButton.setAttribute('aria-label', 'Plotをコピー中');
+  copyButton.title = 'Plotをコピー中…'; copyButton.replaceChildren(icon('spinner')); note('');
   const task = plotQueue.then(async () => {
     if (selected !== artifact) return;
     const graph = element('plot'), height = Math.max(1, Math.round(1200 * graph.clientHeight / graph.clientWidth));
@@ -558,7 +562,11 @@ async function copyCurrentPlot() {
     note('Plotをコピーしました。PowerPointに貼り付けできます。');
   });
   plotQueue = task.catch(() => {});
-  try { await task; } finally { if (selected === artifact) copyButton.disabled = false; }
+  try { await task; } finally {
+    copyButton.setAttribute('aria-busy', 'false'); copyButton.setAttribute('aria-label', label);
+    copyButton.title = title; copyButton.replaceChildren(icon('copy'));
+    if (selected === artifact) copyButton.disabled = false;
+  }
 }
 
 async function setCatalog(updated: Catalog, token = request) {
