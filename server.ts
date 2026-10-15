@@ -48,7 +48,7 @@ export function createServer(root?: string): McpServer {
     const scope = browserScope(context);
     return scope ? `result-store://browser/${scope}/state` : 'result-store://browser/state';
   };
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.2' }, {
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.3' }, {
     cacheHints: { 'server/discover': { ttlMs: 300000, cacheScope: 'private' }, 'tools/list': { ttlMs: 300000, cacheScope: 'private' } },
   });
   const getJobs = (directory?: string) => matlabJobs(getStore(directory).root);
