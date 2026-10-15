@@ -19,7 +19,8 @@ export function preparePlugin() {
     cwd: folder, stdio: ['ignore', 'pipe', 'pipe'], shell: true, windowsHide: true,
   };
   const available = spawnSync('pnpm --version', options).status === 0;
-  const install = spawnSync(available
+  const offline = available ? spawnSync('pnpm install --offline --frozen-lockfile --prod=false', options) : undefined;
+  const install = offline?.status === 0 ? offline : spawnSync(available
     ? 'pnpm install --frozen-lockfile --prod=false'
     : 'npm exec --yes --package=pnpm@11.19.0 -- pnpm install --frozen-lockfile --prod=false', options);
   if (install.stdout) process.stderr.write(install.stdout);
