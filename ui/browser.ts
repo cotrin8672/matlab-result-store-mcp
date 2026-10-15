@@ -1,6 +1,7 @@
 import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
+import { queryFunction } from './query-function.ts';
 import { themedPlotLayout, themedPlotData, applyPlotUpdate, type Plot, type PlotAnnotation, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
 import type { BrowserSelection, BrowserState } from '../browser.ts';
 
@@ -43,6 +44,31 @@ let browserStateUri = 'result-store://browser/state', browserPinsRevision = '';
 let conditions: Condition[] = [];
 const pinCards = new Map<string, PinCard>();
 let pinsRevision = '', pinsRequest = 0, pinQueue: Promise<unknown> = Promise.resolve();
+let loadingPlot: number | undefined;
+
+const icons = {
+  folder: '<path d="M3 7V5h6l2 2h10v13H3Z"/>',
+  scheme: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  pin: '<path d="m16 3 5 5-4 1-3 5v4l-8-8h4l5-3Z M3 21l6-6"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+  context: '<path d="M9 18H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6 M3 18v3l5-3 M17 14v8m-4-4h8"/>',
+  auto: '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/>',
+  light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
+  dark: '<path d="M20.5 13a8.5 8.5 0 0 1-9.5-9.5A8.5 8.5 0 1 0 20.5 13Z"/>',
+  refresh: '<path d="M20 7v5h-5 M4 17v-5h5 M5.3 7a8 8 0 0 1 13-2L20 8 M4 16l1.7 3a8 8 0 0 0 13-2"/>',
+  grip: '<path d="M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01" stroke-width="3"/>',
+};
+function icon(name: keyof typeof icons) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true'); svg.classList.add('icon');
+  svg.innerHTML = icons[name]; return svg;
+}
+document.querySelectorAll<HTMLElement>('[data-icon]').forEach(node => node.replaceChildren(icon(node.dataset.icon as keyof typeof icons)));
+function plotBusy(token: number, busy: boolean) {
+  if (busy) loadingPlot = token;
+  else { if (loadingPlot !== token) return; loadingPlot = undefined; }
+  element('plot-title').classList.toggle('loading', busy); element('plot').setAttribute('aria-busy', String(busy));
+}
 
 function showError(error: unknown) { status.textContent = status.title = error instanceof Error ? error.message : String(error); status.dataset.error = 'true'; }
 function note(text: string) { status.textContent = status.title = text; status.dataset.error = 'false'; }
@@ -156,6 +182,36 @@ async function changeCondition(c: Condition, key: Key, name: string) {
   await refreshFixed(previousKey !== key || previous.op !== c.definition.op ? c.id : undefined);
 }
 function inlineParameter(c: Condition) { return compactLayout.matches && (c.definition.control === 'slider' || c.definition.control === 'range'); }
+function removeCondition(c: Condition) {
+  conditions = conditions.filter(value => value !== c); run(refreshFixed());
+}
+function swipeQuery(row: HTMLElement, c: Condition) {
+  let pointer: number | undefined, startX = 0, startY = 0, distance = 0, swiping = false;
+  row.tabIndex = 0; row.setAttribute('aria-label', `Query ${c.id}`);
+  row.setAttribute('aria-description', '左端を左右にスワイプ、またはDeleteキーで削除');
+  row.onkeydown = event => {
+    if (event.target === row && (event.key === 'Delete' || event.key === 'Backspace')) { event.preventDefault(); removeCondition(c); }
+  };
+  row.onpointerdown = event => {
+    if (event.button !== 0 || (event.target as Element).closest('input,select,button,.query-function-control')) return;
+    pointer = event.pointerId; startX = event.clientX; startY = event.clientY; distance = 0; swiping = false;
+    row.setPointerCapture(pointer);
+  };
+  row.onpointermove = event => {
+    if (pointer !== event.pointerId) return;
+    const x = event.clientX - startX, y = event.clientY - startY;
+    if (!swiping && Math.abs(y) > 8 && Math.abs(y) > Math.abs(x)) { row.releasePointerCapture(pointer); pointer = undefined; return; }
+    if (!swiping && (Math.abs(x) < 8 || Math.abs(x) < Math.abs(y) * 1.5)) return;
+    event.preventDefault(); swiping = true; distance = x; row.style.transform = `translateX(${x}px)`; row.classList.add('swiping');
+    row.parentElement!.classList.add('swiping');
+  };
+  const finish = (event: PointerEvent) => {
+    if (pointer !== event.pointerId) return;
+    pointer = undefined; row.style.transform = ''; row.classList.remove('swiping'); row.parentElement!.classList.remove('swiping');
+    if (event.type === 'pointerup' && Math.abs(distance) >= Math.min(96, row.clientWidth * .2)) removeCondition(c);
+  };
+  row.onpointerup = row.onpointercancel = finish;
+}
 function renderQueries() {
   pickerPopover.hidePopover();
   element('filters').replaceChildren(...conditions.map(c => {
@@ -163,17 +219,16 @@ function renderQueries() {
     const key = document.createElement('select'); key.setAttribute('aria-label', `Query ${c.id} Key`);
     key.append(...currentScheme().keys.map(k => option(k.name, k.name))); key.value = c.key.name;
     key.onchange = () => run(changeCondition(c, currentScheme().keys.find(k => k.name === key.value)!, c.definition.name));
-    const query = document.createElement('select'); query.setAttribute('aria-label', `Query ${c.id} 種類`);
-    query.append(...queriesFor(c.key.kind).map(q => option(q.name, q.name))); query.value = c.definition.name;
-    query.onchange = () => run(changeCondition(c, c.key, query.value));
-    const remove = button('×', () => { conditions = conditions.filter(v => v !== c); run(refreshFixed()); }, `Query ${c.id} を削除`);
+    const query = queryFunction(c.definition, queriesFor(c.key.kind), name => run(changeCondition(c, c.key, name)), `Query ${c.id} 種類`);
+    const grip = document.createElement('span'); grip.className = 'query-swipe'; grip.title = '左右にスワイプして削除'; grip.append(icon('grip'));
     const editor = document.createElement('div'); editor.className = 'query-editor';
     if (c.definition.mode === 'Fixed') editor.append(makeEditor(c));
     else {
       if (inlineParameter(c)) { editor.classList.add('inline-parameter'); editor.append(makeEditor(c)); }
       const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = text.title = currentText(c); editor.append(text);
     }
-    row.append(key, query, editor, remove); return row;
+    row.append(grip, key, query, editor); swipeQuery(row, c);
+    const item = document.createElement('div'); item.className = 'query-item'; item.append(row); return item;
   }));
 }
 function renderParameters() {
@@ -326,15 +381,28 @@ addEventListener('resize', () => pickerPopover.hidePopover());
 
 async function refreshFixed(resetId?: number) {
   const token = ++request; note('検索中…'); offset = 0;
-  if (resetId) await loadDomain(conditions.find(c => c.id === resetId)!, true, token);
-  for (const c of conditions) { if (token !== request) return; await loadDomain(c, false, token); }
-  if (token !== request) return;
-  renderQueries(); renderParameters(); await evaluate(token);
+  plotBusy(token, true);
+  try {
+    if (resetId) await loadDomain(conditions.find(c => c.id === resetId)!, true, token);
+    for (const c of conditions) { if (token !== request) return; await loadDomain(c, false, token); }
+    if (token !== request) return;
+    renderQueries(); renderParameters(); await evaluate(token);
+  } finally { plotBusy(token, false); }
 }
 function highlight() { document.querySelectorAll<HTMLTableRowElement>('#rows tr').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.row === selectedRowId))); }
 function renderTable(page: Page) {
   const scheme = currentScheme(), header = document.createElement('tr');
-  for (const key of scheme.keys) { const th = document.createElement('th'); th.textContent = key.name; header.append(th); }
+  const sort = element<HTMLSelectElement>('sort'), descending = element('direction').textContent === '↓';
+  for (const key of scheme.keys) {
+    const th = document.createElement('th'), active = sort.value === key.name;
+    th.setAttribute('aria-sort', active ? descending ? 'descending' : 'ascending' : 'none');
+    const label = `${key.name}を${active && !descending ? '降順' : '昇順'}に並べ替え`;
+    const control = button(`${key.name}${active ? descending ? ' ↓' : ' ↑' : ''}`, () => {
+      element('direction').textContent = sort.value === key.name && element('direction').textContent === '↑' ? '↓' : '↑';
+      sort.value = key.name; offset = 0; run(evaluate(++request));
+    }, label);
+    control.title = label; th.append(control); header.append(th);
+  }
   element('head').replaceChildren(header);
   element('rows').replaceChildren(...page.rows.map(row => {
     const tr = document.createElement('tr'); tr.dataset.row = row.row_id; tr.tabIndex = 0; tr.setAttribute('aria-label', `結果${row.row_id}を表示`);
@@ -346,18 +414,21 @@ function renderTable(page: Page) {
   element<HTMLButtonElement>('next').disabled = offset + 25 >= page.total; highlight();
 }
 async function evaluate(token: number, preferredRowId?: string, reply?: CallToolResult, force = false, refresh = false) {
-  const page = await call<Page>('search_results', { scheme: currentScheme().id, filters: compile('Fixed'), parameters: compile('Parametric'),
-    selected_row_id: preferredRowId ?? selectedRowId, offset, limit: 25, sort_key: element<HTMLSelectElement>('sort').value, descending: element('direction').textContent === '↓' });
-  if (token !== request) return;
-  renderTable(page); element('matches').textContent = `${page.matched_total} / ${currentScheme().count}件`;
-  const target = preferredRowId ?? (page.selected_matches ? selectedRowId : page.matched_total === 1 ? page.first_match ?? undefined : undefined);
-  if (!target) {
-    selectedRowId = undefined; await clearPlot(); if (token !== request) return;
-    note(page.matched_total > 1 ? `${page.matched_total}件該当しています。Queryで絞り込むか、表から表示する結果を選択してください。` : ''); highlight(); return;
-  }
-  selectedRowId = target; highlight();
-  if (force || !selected || selected.directory !== catalog.directory || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
-  else note('');
+  plotBusy(token, true);
+  try {
+    const page = await call<Page>('search_results', { scheme: currentScheme().id, filters: compile('Fixed'), parameters: compile('Parametric'),
+      selected_row_id: preferredRowId ?? selectedRowId, offset, limit: 25, sort_key: element<HTMLSelectElement>('sort').value, descending: element('direction').textContent === '↓' });
+    if (token !== request) return;
+    renderTable(page); element('matches').textContent = `${page.matched_total} / ${currentScheme().count}件`;
+    const target = preferredRowId ?? (page.selected_matches ? selectedRowId : page.matched_total === 1 ? page.first_match ?? undefined : undefined);
+    if (!target) {
+      selectedRowId = undefined; await clearPlot(); if (token !== request) return;
+      note(page.matched_total > 1 ? `${page.matched_total}件該当しています。Queryで絞り込むか、表から表示する結果を選択してください。` : ''); highlight(); return;
+    }
+    selectedRowId = target; highlight();
+    if (force || !selected || selected.directory !== catalog.directory || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
+    else note('');
+  } finally { plotBusy(token, false); }
 }
 async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
   const token = ++request;
@@ -380,14 +451,16 @@ async function clearPlot(token = request) {
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   pinButton.disabled = addContextButton.disabled = copyButton.disabled = true;
   if (!currentScheme().plots?.length) { await clearPlot(token); if (token === request) note('登録済みPlotがありません。'); return; }
+  plotBusy(token, true);
   const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
   plotQueue = task.catch(() => {});
   try { await task; }
   catch (error) { if (token !== request) return; await clearPlot(); throw error; }
+  finally { plotBusy(token, false); }
 }
 async function drawSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   if (token !== request) return;
-  note('Plotを読み込み中…');
+  note('');
   const args = { directory: catalog.directory, scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
   const response = reply?._meta?.plot_update ? reply : await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh },
     _meta: { 'matlab-results/browser': true } });
@@ -505,10 +578,11 @@ async function setCatalog(updated: Catalog, token = request) {
   if (token !== request) return;
   changeScheme(catalog.schemes.some(s => s.id === old) ? old : undefined);
 }
-async function openDirectory(directory?: string, evaluate = true) {
+async function openDirectory(directory?: string, evaluate = true, fromInput = false) {
   const token = ++request; note('読み込み中…');
   const updated = await call<Catalog>('list_schemes', directory ? { directory } : {});
   if (token !== request) return;
+  if (fromInput && directoryInput.value.trim() !== directory) { note(''); return; }
   await setCatalog(updated, token);
   if (token === request && catalog.schemes.length && evaluate) await refreshFixed();
 }
@@ -585,17 +659,36 @@ async function accept(reply: CallToolResult) {
 
 element('add-query').onclick = () => run(addCondition());
 element('clear-query').onclick = () => { conditions = []; run(refreshFixed()); };
-element('open-directory').onclick = () => run(openDirectory(directoryInput.value.trim()));
-directoryInput.onkeydown = event => { if (event.key === 'Enter') run(openDirectory(directoryInput.value.trim())); };
+let directoryTimer: ReturnType<typeof setTimeout>, pendingDirectory = '';
+function applyDirectory() {
+  clearTimeout(directoryTimer);
+  const directory = directoryInput.value.trim();
+  if (!directory || directory === catalog?.directory || directory === pendingDirectory) return;
+  pendingDirectory = directory;
+  run(openDirectory(directory, true, true).catch(error => { if (directoryInput.value.trim() === directory) throw error; })
+    .finally(() => { if (pendingDirectory === directory) pendingDirectory = ''; }));
+}
+directoryInput.oninput = () => {
+  clearTimeout(directoryTimer);
+  const listed = Array.from(element<HTMLDataListElement>('directories').options).some(value => value.value === directoryInput.value);
+  directoryTimer = setTimeout(applyDirectory, listed ? 0 : 500);
+};
+directoryInput.onchange = applyDirectory;
+directoryInput.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); applyDirectory(); } };
 schemeSelect.onchange = () => { changeScheme(); run(refreshFixed()); };
 plotSelect.onchange = () => { if (selectedRowId) run(evaluate(++request, selectedRowId, undefined, true)); };
 element('refresh').onclick = () => run((async () => {
-  const updated = await call<Catalog>('list_schemes', {}); const old = currentScheme()?.id; catalog = updated; directoryInput.value = updated.directory; useBrowserState(updated.browser_state_uri);
+  const directory = directoryInput.value.trim();
+  if (directory && directory !== catalog?.directory) { applyDirectory(); return; }
+  const token = ++request, updated = await call<Catalog>('list_schemes', {});
+  if (token !== request) return;
+  const old = currentScheme()?.id; catalog = updated; directoryInput.value = updated.directory; useBrowserState(updated.browser_state_uri);
   if (catalog.schemes.some(s => s.id === old)) {
     schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`))); schemeSelect.value = old; configurePlots(true);
     conditions = conditions.filter(c => currentScheme().keys.some(k => k.name === c.key.name));
     conditions.forEach(c => { c.key = currentScheme().keys.find(k => k.name === c.key.name)!; });
-    await refreshFixed(); if (selectedRowId) await evaluate(++request, selectedRowId, undefined, true, true);
+    const pending = refreshFixed(), refreshToken = request;
+    await pending; if (refreshToken === request && selectedRowId) await evaluate(++request, selectedRowId, undefined, true, true);
   }
   else await accept({ content: [], structuredContent: updated });
 })());
@@ -609,7 +702,7 @@ pinButton.onclick = () => run(pinCurrent());
 copyButton.onclick = () => run(copyCurrentPlot());
 plotThemeButton.onclick = () => {
   plotTheme = plotTheme === 'auto' ? 'light' : plotTheme === 'light' ? 'dark' : 'auto';
-  plotThemeButton.textContent = plotTheme === 'auto' ? 'Auto' : plotTheme === 'light' ? 'Light' : 'Dark';
+  plotThemeButton.replaceChildren(icon(plotTheme));
   plotThemeButton.setAttribute('aria-label', `Plotテーマ: ${plotTheme === 'auto' ? 'アプリに追従' : plotTheme}。クリックで切り替え`);
   plotThemeButton.title = plotThemeButton.getAttribute('aria-label')!;
   refreshPlotThemes();

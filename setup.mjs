@@ -8,7 +8,7 @@ export function preparePlugin() {
   if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('MATLAB Result Store needs Node.js 24 or later.');
   const folder = import.meta.dirname;
   const hash = createHash('sha256');
-  for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'build.mjs', 'queries.ts', 'plots.ts', 'ui/browser.ts', 'ui/browser.html', 'ui/preview.ts', 'ui/preview.html']) {
+  for (const file of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'build.mjs', 'queries.ts', 'plots.ts', 'ui/browser.ts', 'ui/browser.html', 'ui/query-function.ts', 'ui/preview.ts', 'ui/preview.html']) {
     hash.update(readFileSync(path.join(folder, file)));
   }
   const fingerprint = hash.digest('hex');
