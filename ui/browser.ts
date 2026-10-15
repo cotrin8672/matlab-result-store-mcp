@@ -31,8 +31,10 @@ const element = <T extends HTMLElement>(id: string) => document.getElementById(i
 const schemeSelect = element<HTMLSelectElement>('scheme'), plotSelect = element<HTMLSelectElement>('plot-choice');
 const directoryInput = element<HTMLInputElement>('directory');
 const status = element('status'), addContextButton = element<HTMLButtonElement>('add-context'), pinButton = element<HTMLButtonElement>('pin-plot');
-const dialog = element<HTMLDialogElement>('picker-dialog');
-const compactLayout = matchMedia('(max-width:760px)');
+const copyButton = element<HTMLButtonElement>('copy-plot'), plotThemeButton = element<HTMLButtonElement>('plot-theme');
+const pickerPopover = element('picker-popover');
+const compactLayout = matchMedia('(max-width:760px), (orientation:portrait)');
+let plotTheme: 'auto' | 'light' | 'dark' = 'auto';
 let catalog: Catalog, offset = 0, nextId = 0, request = 0;
 let selected: Artifact | undefined, selectedRowId: string | undefined;
 let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.resolve();
@@ -46,6 +48,8 @@ function showError(error: unknown) { status.textContent = status.title = error i
 function note(text: string) { status.textContent = status.title = text; status.dataset.error = 'false'; }
 function useBrowserState(uri?: string) { if (uri && uri !== browserStateUri) { browserStateUri = uri; browserRevision = browserPinsRevision = ''; } }
 function themeColors() {
+  if (plotTheme === 'light') return { background: '#ffffff', text: '#202020', grid: '#0000001f' };
+  if (plotTheme === 'dark') return { background: '#181818', text: '#eeeeee', grid: '#ffffff29' };
   const style = getComputedStyle(document.documentElement);
   return { background: style.backgroundColor, text: style.color,
     grid: style.getPropertyValue('--color-border-secondary').trim() || (style.colorScheme === 'dark' ? '#ffffff29' : '#0000001f') };
@@ -98,9 +102,16 @@ async function candidateAt(c: Condition, index: number): Promise<Candidate> {
 async function loadDomain(c: Condition, reset: boolean, token: number) {
   c.domainFilters = compile('Fixed', c.definition.mode === 'Fixed' ? c.id : 0);
   const snap = c.definition.control === 'range' || (c.definition.control === 'slider' && c.definition.op !== 'eq');
-  const result = await domain(c, { locate: reset || c.definition.op === 'contains' ? [] : c.values, nearest: snap });
+  const result = await domain(c, { locate: reset || c.definition.op === 'contains' ? [] : c.values, nearest: snap,
+    limit: c.definition.control === 'select' ? 100 : 25 });
   if (token !== request) return;
   c.total = result.total; c.domain = result.candidates; remember(c, [...result.candidates, ...result.locations]);
+  if (c.definition.control === 'select') {
+    for (let start = c.domain.length; start < c.total; start += 100) {
+      const page = await domain(c, { offset: start, limit: 100 }); if (token !== request) return;
+      c.domain.push(...page.candidates); remember(c, page.candidates);
+    }
+  }
   if (reset) { c.values = []; c.all = c.definition.op === 'in'; }
   if (c.definition.op === 'contains') { if (reset) c.values = ['']; return; }
   if (!c.total) return;
@@ -130,7 +141,7 @@ function configurePlots(preserve = false) {
 }
 function changeScheme(id?: string) {
   if (id) schemeSelect.value = id;
-  const scheme = currentScheme(); conditions = []; offset = 0; selectedRowId = undefined; dialog.close(); configurePlots();
+  const scheme = currentScheme(); conditions = []; offset = 0; selectedRowId = undefined; pickerPopover.hidePopover(); configurePlots();
   element<HTMLSelectElement>('sort').replaceChildren(option('RowId', '保存順'), ...scheme.keys.map(k => option(k.name, k.name)));
   element('direction').textContent = '↑';
 }
@@ -146,6 +157,7 @@ async function changeCondition(c: Condition, key: Key, name: string) {
 }
 function inlineParameter(c: Condition) { return compactLayout.matches && (c.definition.control === 'slider' || c.definition.control === 'range'); }
 function renderQueries() {
+  pickerPopover.hidePopover();
   element('filters').replaceChildren(...conditions.map(c => {
     const row = document.createElement('div'); row.className = 'query-row'; row.dataset.query = String(c.id);
     const key = document.createElement('select'); key.setAttribute('aria-label', `Query ${c.id} Key`);
@@ -159,7 +171,7 @@ function renderQueries() {
     if (c.definition.mode === 'Fixed') editor.append(makeEditor(c));
     else {
       if (inlineParameter(c)) { editor.classList.add('inline-parameter'); editor.append(makeEditor(c)); }
-      const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = currentText(c); editor.append(text);
+      const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = text.title = currentText(c); editor.append(text);
     }
     row.append(key, query, editor, remove); return row;
   }));
@@ -173,8 +185,14 @@ function renderParameters() {
   }));
   element('parameters-panel').hidden = compactLayout.matches && !parameters.childElementCount;
 }
-compactLayout.addEventListener('change', () => { if (catalog) { renderQueries(); renderParameters(); } });
-function sync(c: Condition) { const label = document.getElementById(`current-${c.id}`); if (label) label.textContent = currentText(c); c.sync?.(); }
+function positionQueries() {
+  const sidebar = document.querySelector<HTMLElement>('.sidebar')!;
+  if (compactLayout.matches) element('main').insertBefore(sidebar, document.querySelector('.table-panel'));
+  else document.querySelector('.columns')!.prepend(sidebar);
+}
+positionQueries();
+compactLayout.addEventListener('change', () => { positionQueries(); if (catalog) { renderQueries(); renderParameters(); } });
+function sync(c: Condition) { const label = document.getElementById(`current-${c.id}`); if (label) label.textContent = label.title = currentText(c); c.sync?.(); }
 async function changed(c: Condition) {
   if (c.definition.mode === 'Fixed') await refreshFixed();
   else { sync(c); await evaluate(++request); }
@@ -229,7 +247,7 @@ function makeEditor(c: Condition): HTMLElement {
     const apply = () => { clearTimeout(timer); if (input.isConnected && conditions.includes(c) && c.values[0] !== input.value) { c.values = [input.value]; run(changed(c)); } };
     input.oninput = () => { clearTimeout(timer); timer = setTimeout(apply, 200); }; input.onchange = apply;
     input.onkeydown = event => { if (event.key === 'Enter') apply(); }; box.append(input);
-  } else if (kind === 'select' && c.total <= 25) {
+  } else if (kind === 'select') {
     const select = document.createElement('select'); select.setAttribute('aria-label', `${c.key.name} ${c.definition.name}`);
     const values = [...c.domain]; const value = c.values[0];
     if (!values.some(v => valueId(v.value) === valueId(value))) values.push({ index: -1, value, label: valueText(c, value), raw: value });
@@ -237,7 +255,11 @@ function makeEditor(c: Condition): HTMLElement {
     select.value = String(values.findIndex(v => valueId(v.value) === valueId(value)));
     select.onchange = () => { const v = values[Number(select.value)]; c.values = [v.value]; c.positions = [v.index]; run(changed(c)); }; box.append(select);
   } else if (kind === 'list') box.append(makePicker(c, true, true).element);
-  else { const choose = button(currentText(c), () => openPicker(c), `${c.key.name} ${c.definition.name}`); c.sync = () => { choose.textContent = currentText(c); }; box.append(choose); }
+  else {
+    const choose = button(currentText(c), () => openPicker(c, choose), `${c.key.name} ${c.definition.name}`);
+    choose.setAttribute('aria-haspopup', 'dialog');
+    c.sync = () => { choose.textContent = currentText(c); }; box.append(choose);
+  }
   return box;
 }
 async function setIndices(c: Condition, indices: number[]) {
@@ -280,15 +302,27 @@ function makePicker(c: Condition, multiple: boolean, immediate: boolean) {
   toolbar.append(previous, next, count, allLabel); box.append(toolbar, list); run(load());
   return { element: box, read: () => ({ values, all }) };
 }
-function openPicker(c: Condition) {
-  const picker = makePicker(c, c.definition.op === 'in', false);
+function openPicker(c: Condition, anchor: HTMLElement) {
+  if (pickerPopover.matches(':popover-open')) {
+    pickerPopover.hidePopover(); if (pickerPopover.dataset.condition === String(c.id)) return;
+  }
+  pickerPopover.dataset.condition = String(c.id);
+  const picker = makePicker(c, true, false);
   element('picker-title').textContent = c.key.name; element('picker-body').replaceChildren(picker.element);
-  element('picker-cancel').onclick = () => dialog.close();
+  element('picker-cancel').onclick = () => { pickerPopover.hidePopover(); anchor.focus(); };
   element('picker-apply').onclick = () => {
-    const result = picker.read(); dialog.close(); if (!conditions.includes(c)) return;
-    if (c.definition.op === 'in' || result.values.length) { c.values = result.values; c.all = result.all; run(changed(c)); }
-  }; dialog.showModal();
+    const result = picker.read(); pickerPopover.hidePopover(); anchor.focus(); if (!conditions.includes(c)) return;
+    c.values = result.values; c.all = result.all; run(changed(c));
+  };
+  const bounds = anchor.getBoundingClientRect(), width = Math.min(Math.max(bounds.width, 240), innerWidth - 16);
+  pickerPopover.style.width = `${width}px`;
+  pickerPopover.style.left = `${Math.max(8, Math.min(bounds.left, innerWidth - width - 8))}px`;
+  pickerPopover.showPopover();
+  const height = pickerPopover.getBoundingClientRect().height;
+  pickerPopover.style.top = `${Math.max(8, bounds.bottom + height + 12 <= innerHeight ? bounds.bottom + 4 : bounds.top - height - 4)}px`;
+  pickerPopover.querySelector<HTMLInputElement>('input')?.focus();
 }
+addEventListener('resize', () => pickerPopover.hidePopover());
 
 async function refreshFixed(resetId?: number) {
   const token = ++request; note('検索中…'); offset = 0;
@@ -319,7 +353,7 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
   const target = preferredRowId ?? (page.selected_matches ? selectedRowId : page.matched_total === 1 ? page.first_match ?? undefined : undefined);
   if (!target) {
     selectedRowId = undefined; await clearPlot(); if (token !== request) return;
-    note(''); highlight(); return;
+    note(page.matched_total > 1 ? `${page.matched_total}件該当しています。Queryで絞り込むか、表から表示する結果を選択してください。` : ''); highlight(); return;
   }
   selectedRowId = target; highlight();
   if (force || !selected || selected.directory !== catalog.directory || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
@@ -335,7 +369,7 @@ async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
   renderQueries(); renderParameters(); await evaluate(token, rowId, reply, force);
 }
 async function clearPlot(token = request) {
-  pinButton.disabled = addContextButton.disabled = true;
+  pinButton.disabled = addContextButton.disabled = copyButton.disabled = true;
   const task = plotQueue.then(() => {
     if (token !== request) return;
     selected = undefined; renderedPlot = undefined; Plotly.purge(element('plot'));
@@ -344,7 +378,7 @@ async function clearPlot(token = request) {
   plotQueue = task.catch(() => {}); await task;
 }
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
-  pinButton.disabled = addContextButton.disabled = true;
+  pinButton.disabled = addContextButton.disabled = copyButton.disabled = true;
   if (!currentScheme().plots?.length) { await clearPlot(token); if (token === request) note('登録済みPlotがありません。'); return; }
   const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
   plotQueue = task.catch(() => {});
@@ -382,7 +416,7 @@ async function drawSelection(rowId: string, token: number, reply?: CallToolResul
   if (token !== request) return;
   selected = artifact; plotAnnotations = { revision: '', annotations: [] };
   await refreshAnnotations(true); if (token !== request) return;
-  pinButton.disabled = addContextButton.disabled = false; note('');
+  pinButton.disabled = addContextButton.disabled = copyButton.disabled = false; note('');
 }
 async function refreshAnnotations(force = false) {
   const artifact = selected; if (!artifact || !renderedPlot) return;
@@ -390,7 +424,7 @@ async function refreshAnnotations(force = false) {
   const colors = themeColors();
   const signature = JSON.stringify(colors);
   if (selected !== artifact || !renderedPlot || (!force && saved.revision === plotAnnotations.revision && signature === plotColors)) return;
-  await Plotly.update(element('plot'), themedPlotData(renderedPlot.plot, colors.background), themedPlotLayout(renderedPlot.plot, saved.annotations, colors));
+  await Plotly.update(element('plot'), themedPlotData(renderedPlot.plot, colors.background), themedPlotLayout(renderedPlot.plot, saved.annotations, colors, element('plot').clientHeight));
   plotAnnotations = saved; plotColors = signature;
 }
 async function showSelection(selection: BrowserSelection, reply?: CallToolResult) {
@@ -422,13 +456,7 @@ async function addContext() {
   const artifact = selected; if (!artifact) return;
   const task = plotQueue.then(async () => {
     if (selected !== artifact) return;
-    // Sandboxed hosts can block the blob URL used by Plotly's PNG export.
-    const preview = new Image();
-    preview.src = await Plotly.toImage(element('plot'), { format: 'svg', width: 1100, height: 800 });
-    await preview.decode();
-    const canvas = document.createElement('canvas'); canvas.width = 1100; canvas.height = 800;
-    canvas.getContext('2d')!.drawImage(preview, 0, 0, canvas.width, canvas.height);
-    const png = canvas.toDataURL('image/png');
+    const { png } = await plotImages();
     const selection = { ...artifact, annotations: plotAnnotations.annotations };
     await app.updateModelContext({ content: [{ type: 'text', text: `選択した保存結果: ${JSON.stringify(selection)}` },
       { type: 'image', mimeType: 'image/png', data: png.slice(png.indexOf(',') + 1) }], structuredContent: { selection } });
@@ -437,6 +465,29 @@ async function addContext() {
   plotQueue = task.catch(() => {});
   return task;
 }
+
+async function plotImages(width = 1100, height = 800) {
+  // Sandboxed hosts can block the blob URL used by Plotly's PNG export.
+  const svg = await Plotly.toImage(element('plot'), { format: 'svg', width, height });
+  const preview = new Image(); preview.src = svg; await preview.decode();
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  canvas.getContext('2d')!.drawImage(preview, 0, 0, width, height);
+  return { svg, png: canvas.toDataURL('image/png') };
+}
+
+async function copyCurrentPlot() {
+  const artifact = selected; if (!artifact || !renderedPlot) return;
+  copyButton.disabled = true;
+  const task = plotQueue.then(async () => {
+    if (selected !== artifact) return;
+    const graph = element('plot'), height = Math.max(1, Math.round(1200 * graph.clientHeight / graph.clientWidth));
+    data(await app.callServerTool({ name: 'copy_plot', arguments: await plotImages(1200, height) }));
+    note('Plotをコピーしました。PowerPointに貼り付けできます。');
+  });
+  plotQueue = task.catch(() => {});
+  try { await task; } finally { if (selected === artifact) copyButton.disabled = false; }
+}
+
 async function setCatalog(updated: Catalog, token = request) {
   useBrowserState(updated.browser_state_uri);
   const old = catalog?.directory === updated.directory ? schemeSelect.value : '';
@@ -462,10 +513,11 @@ async function openDirectory(directory?: string, evaluate = true) {
   if (token === request && catalog.schemes.length && evaluate) await refreshFixed();
 }
 async function themePins() {
-  const colors = themeColors(), signature = JSON.stringify(colors);
+  const colors = themeColors();
   for (const card of pinCards.values()) {
+    const signature = `${JSON.stringify(colors)}:${card.graph.clientHeight}`;
     if (!card.plot || card.colors === signature) continue;
-    await Plotly.update(card.graph, themedPlotData(card.plot, colors.background), themedPlotLayout(card.plot, card.pin.annotations, colors));
+    await Plotly.update(card.graph, themedPlotData(card.plot, colors.background), themedPlotLayout(card.plot, card.pin.annotations, colors, card.graph.clientHeight));
     card.colors = signature;
   }
 }
@@ -554,21 +606,38 @@ element('direction').onclick = () => { element('direction').textContent = elemen
 element('toggle-table').onclick = () => { const hidden = element('main').classList.toggle('table-hidden'); element('table-wrap').hidden = hidden; element('pages').hidden = hidden; element('toggle-table').textContent = hidden ? 'Tableを表示' : 'Tableを隠す'; };
 addContextButton.onclick = () => run(addContext());
 pinButton.onclick = () => run(pinCurrent());
+copyButton.onclick = () => run(copyCurrentPlot());
+plotThemeButton.onclick = () => {
+  plotTheme = plotTheme === 'auto' ? 'light' : plotTheme === 'light' ? 'dark' : 'auto';
+  plotThemeButton.textContent = plotTheme === 'auto' ? 'Auto' : plotTheme === 'light' ? 'Light' : 'Dark';
+  plotThemeButton.setAttribute('aria-label', `Plotテーマ: ${plotTheme === 'auto' ? 'アプリに追従' : plotTheme}。クリックで切り替え`);
+  plotThemeButton.title = plotThemeButton.getAttribute('aria-label')!;
+  refreshPlotThemes();
+};
 let resizeFrame = 0;
 const graphObserver = new ResizeObserver(() => {
   cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => {
-    if (selected) void Plotly.Plots.resize(element('plot'));
-    for (const card of pinCards.values()) if (card.plot) void Plotly.Plots.resize(card.graph);
+    const graphs = [...(selected ? [element('plot')] : []), ...[...pinCards.values()].filter(card => card.plot).map(card => card.graph)]
+      .filter(graph => graph.clientWidth > 0 && graph.clientHeight > 0);
+    run(Promise.all(graphs.map(graph => Plotly.Plots.resize(graph))).then(() => refreshPlotThemes()));
   });
 });
 graphObserver.observe(element('plot'));
+function refreshPlotThemes() {
+  if (selected) {
+    const task = plotQueue.then(async () => {
+      if (!selected || !renderedPlot) return;
+      const colors = themeColors();
+      await Plotly.update(element('plot'), themedPlotData(renderedPlot.plot, colors.background), themedPlotLayout(renderedPlot.plot, plotAnnotations.annotations, colors, element('plot').clientHeight));
+      plotColors = JSON.stringify(colors);
+    }); plotQueue = task.catch(() => {}); run(task);
+  }
+  const task = pinQueue.then(() => themePins()); pinQueue = task.catch(() => {}); run(task);
+}
 function theme(context: ReturnType<App['getHostContext']>) {
   if (context?.theme) applyDocumentTheme(context.theme);
   if (context?.styles?.variables) applyHostStyleVariables(context.styles.variables);
-  if (selected) {
-    const task = plotQueue.then(() => refreshAnnotations()); plotQueue = task.catch(() => {}); run(task);
-  }
-  const task = pinQueue.then(() => themePins()); pinQueue = task.catch(() => {}); run(task);
+  refreshPlotThemes();
 }
 app.addEventListener('hostcontextchanged', theme); app.ontoolresult = reply => run(accept(reply)); await app.connect(); theme(app.getHostContext());
 run(refreshPins());

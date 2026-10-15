@@ -17,6 +17,7 @@ import { matlabJobs } from './jobs.ts';
 import { JobEvents, jobOwner } from './events.ts';
 import { plotCache } from './cache.ts';
 import { PlotPins } from './pins.ts';
+import { copyPlot } from './clipboard.ts';
 export { configuredRoot } from './config.ts';
 
 function plotHtml(plot: Plot) {
@@ -47,12 +48,12 @@ export function createServer(root?: string): McpServer {
     const scope = browserScope(context);
     return scope ? `result-store://browser/${scope}/state` : 'result-store://browser/state';
   };
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.0' }, {
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.1' }, {
     cacheHints: { 'server/discover': { ttlMs: 300000, cacheScope: 'private' }, 'tools/list': { ttlMs: 300000, cacheScope: 'private' } },
   });
   const getJobs = (directory?: string) => matlabJobs(getStore(directory).root);
   JobEvents.register(server, directory => getJobs(directory).events);
-  const uiUri = 'ui://result-store/browser-v0.5.html';
+  const uiUri = 'ui://result-store/browser-v0.5.1.html';
   const pins = new PlotPins();
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const directory = z.string().min(1).refine(path.isAbsolute, 'directory must be an absolute path.').optional()
@@ -176,6 +177,12 @@ export function createServer(root?: string): McpServer {
     inputSchema: z.object({ directory }), annotations,
     _meta: { ui: { resourceUri: uiUri, visibility: ['app', 'model'] }, 'openai/ui': { entrypoints: [{ type: 'global' }, { type: 'thread' }] } },
   }, async (a, context) => uiResult(result({ ...await listSchemes(a.directory), browser_state_uri: browserUri(context) })));
+
+  server.registerTool('copy_plot', {
+    description: 'Copy the displayed Plot as SVG with a PNG fallback to the local Windows clipboard. Used only by the explicit Copy button in MatlabResults.',
+    inputSchema: z.object({ svg: z.string().min(1).max(20 * 1024 * 1024), png: z.string().min(1).max(20 * 1024 * 1024) }),
+    annotations: { ...annotations, readOnlyHint: false }, _meta: { ui: { visibility: ['app'] } },
+  }, async a => result(await copyPlot(a.svg, a.png)));
 
   server.registerResource('browser-state', 'result-store://browser/state', {
     description: 'Latest completed model-requested Plot for the existing browser.', mimeType: 'application/json',

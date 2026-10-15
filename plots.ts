@@ -43,16 +43,37 @@ export function validateAnnotations(plot: Plot, items: PlotAnnotation[]) {
   }
 }
 
-export function themedPlotLayout(plot: Plot, items: PlotAnnotation[], colors: { background: string; text: string; grid: string }) {
+export function themedPlotLayout(plot: Plot, items: PlotAnnotation[], colors: { background: string; text: string; grid: string }, height?: number) {
   const annotated = annotationLayout(plot, items);
   const layout: Record<string, unknown> = { ...annotated, paper_bgcolor: colors.background, plot_bgcolor: colors.background,
     'font.color': colors.text, 'title.font.color': colors.text, 'hoverlabel.bgcolor': colors.background, 'hoverlabel.font.color': colors.text,
     annotations: annotated.annotations.map(item => String(item.name ?? '').startsWith('result-store-ai-') ? item
       : { ...item, font: { ...(item.font as object), color: colors.text } }) };
+  const fontSize = Number((plot.layout.font as Record<string, unknown> | undefined)?.size) || 12;
+  const textHeight = (value: unknown, size: number) => {
+    const label: Record<string, unknown> | undefined = typeof value === 'string' ? { text: value } : value as Record<string, unknown> | undefined;
+    return label?.text ? String(label.text).split(/<br\s*\/?>|\n/i).length * (Number((label.font as Record<string, unknown> | undefined)?.size) || size) * 1.3 : 0;
+  };
+  const margin = (plot.layout.margin ?? {}) as Record<string, unknown>;
+  const top = Math.max(Number(margin.t ?? 100), textHeight(plot.layout.title, fontSize * 1.4) + 16, 24);
+  const bottom = Math.max(Number(margin.b ?? 80), 16);
+  layout['margin.t'] = top; layout['margin.b'] = bottom;
+  if (textHeight(plot.layout.title, fontSize * 1.4)) {
+    layout['title.yref'] = 'container'; layout['title.y'] = 1; layout['title.yanchor'] = 'top'; layout['title.pad.t'] = 8;
+  }
+  const innerHeight = Math.max(1, (height && Number.isFinite(height) ? height : Number(plot.layout.height) || 450) - top - bottom);
+  const rows: { name: string; domain: number[]; xaxis: Record<string, unknown> }[] = [];
   for (const name of Object.keys(plot.layout)) {
     if (/^[xy]axis\d*$/.test(name)) {
+      const axis = plot.layout[name] as Record<string, unknown>;
+      layout[`${name}.automargin`] = true;
+      layout[`${name}.title.standoff`] = Math.max(6, Number((axis.title as Record<string, unknown> | undefined)?.standoff) || 0);
       for (const field of ['color', 'linecolor', 'tickcolor', 'tickfont.color', 'title.font.color']) layout[`${name}.${field}`] = colors.text;
       for (const field of ['gridcolor', 'zerolinecolor']) layout[`${name}.${field}`] = colors.grid;
+      if (name.startsWith('y') && !axis.overlaying && Array.isArray(axis.domain) && axis.domain.length === 2) {
+        const anchor = typeof axis.anchor === 'string' && /^x\d*$/.test(axis.anchor) ? axis.anchor : `x${name.slice(5)}`;
+        rows.push({ name, domain: axis.domain as number[], xaxis: (plot.layout[`xaxis${anchor.slice(1)}`] ?? {}) as Record<string, unknown> });
+      }
     } else if (/^legend\d*$/.test(name)) {
       layout[`${name}.bgcolor`] = colors.background;
       layout[`${name}.font.color`] = colors.text;
@@ -61,6 +82,25 @@ export function themedPlotLayout(plot: Plot, items: PlotAnnotation[], colors: { 
       layout[`${name}.colorbar.bgcolor`] = colors.background;
       for (const field of ['tickcolor', 'tickfont.color', 'title.font.color', 'outlinecolor']) layout[`${name}.colorbar.${field}`] = colors.text;
     }
+  }
+  for (const row of rows) {
+    const [low, high] = row.domain, xdomain = (row.xaxis.domain ?? [0, 1]) as number[];
+    let start = low;
+    for (const below of rows) {
+      const otherX = (below.xaxis.domain ?? [0, 1]) as number[], edge = below.domain[1];
+      if (edge > low + 1e-6 || Math.min(xdomain[1], otherX[1]) <= Math.max(xdomain[0], otherX[0])) continue;
+      const tickSize = Number((row.xaxis.tickfont as Record<string, unknown> | undefined)?.size) || fontSize;
+      const xlabel = textHeight(row.xaxis.title, fontSize * 1.2);
+      const ticks = row.xaxis.showticklabels === false ? 0 : tickSize * 1.3 + 4;
+      const standoff = Math.max(6, Number((row.xaxis.title as Record<string, unknown> | undefined)?.standoff) || 0);
+      const labels = row.xaxis.side === 'top' ? 0 : ticks + (xlabel ? xlabel + standoff : 0);
+      const titles = annotated.annotations.filter(item => item.xref === 'paper' && item.yref === 'paper' && item.yanchor === 'bottom' &&
+        Math.abs(Number(item.y) - edge) < 1e-6 && Number(item.x) >= otherX[0] && Number(item.x) <= otherX[1]);
+      const gap = labels + Math.max(0, ...titles.map(item => textHeight(item, fontSize))) + 8;
+      start = Math.max(start, Math.min(high - 32 / innerHeight, edge + gap / innerHeight));
+    }
+    // Recompute from saved domains on every resize; paper annotations keep their saved coordinates.
+    layout[`${row.name}.domain`] = [start, high];
   }
   return layout;
 }
