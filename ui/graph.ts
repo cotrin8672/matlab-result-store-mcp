@@ -125,23 +125,25 @@ function layout(graph: GraphData): Map<string, Point> {
 
 const styles = `
 .result-graph-container{position:relative;overflow:hidden;min-height:160px}
-.result-graph{display:block;width:100%;height:100%;touch-action:none;user-select:none;cursor:grab;color:var(--color-text-primary,CanvasText);--graph-accent:light-dark(#007f99,#20c7e7)}
+.result-graph{display:block;width:100%;height:100%;touch-action:none;user-select:none;cursor:grab;color:var(--color-text-primary,CanvasText);--graph-accent:light-dark(#1687d9,#39b8ff);--graph-muted:light-dark(#7c8796,#8993a3)}
 .result-graph.dragging{cursor:grabbing}.result-graph .graph-edge{cursor:pointer;outline:none}
-.result-graph .graph-edge-line{stroke:currentColor;stroke-width:1;stroke-opacity:.25;fill:none;marker-end:var(--graph-arrow);vector-effect:non-scaling-stroke;transition:stroke .16s,stroke-opacity .16s,filter .16s}
-.result-graph .graph-arrow{fill:currentColor;fill-opacity:.45}.result-graph .graph-arrow-active{fill:var(--graph-accent);fill-opacity:1}
+.result-graph .graph-edge-line{stroke:var(--graph-accent);stroke-width:1;stroke-opacity:.45;fill:none;marker-end:var(--graph-arrow);vector-effect:non-scaling-stroke;transition:stroke .16s,stroke-opacity .16s,filter .16s}
+.result-graph .graph-arrow{fill:var(--graph-accent);fill-opacity:.65}.result-graph .graph-arrow-active{fill:var(--graph-accent);fill-opacity:1}.result-graph .graph-arrow-muted{fill:var(--graph-muted);fill-opacity:.65}
 .result-graph .graph-edge-hit{stroke:transparent;stroke-width:12;fill:none;vector-effect:non-scaling-stroke;pointer-events:stroke}
-.result-graph .graph-node{r:var(--graph-dot-radius,3.6px);fill:currentColor;fill-opacity:.65;stroke:transparent;stroke-width:0;vector-effect:non-scaling-stroke;cursor:pointer;outline:none;transition:fill .16s,fill-opacity .16s,opacity .16s,stroke .16s,stroke-width .16s,filter .16s}
-.result-graph .is-path.graph-node,.result-graph .is-current.graph-node,.result-graph .is-hot.graph-node{fill:var(--graph-accent);fill-opacity:1}
+.result-graph .graph-node{r:var(--graph-dot-radius,3.6px);fill:var(--graph-accent);stroke:transparent;stroke-width:18;vector-effect:non-scaling-stroke;pointer-events:all;cursor:pointer;outline:none;transition:r .18s cubic-bezier(.2,.8,.2,1),fill .16s,opacity .16s,filter .18s}
 .result-graph .graph-edge.is-path .graph-edge-line{stroke:var(--graph-accent);stroke-opacity:.8;marker-end:var(--graph-arrow-active)}
-.result-graph .graph-edge.is-hot .graph-edge-line,.result-graph .graph-edge:focus-visible .graph-edge-line{stroke:var(--graph-accent);stroke-opacity:1;marker-end:var(--graph-arrow-active);filter:drop-shadow(0 0 3px var(--graph-accent))}
-.result-graph .is-hot.graph-node{filter:drop-shadow(0 0 3px var(--graph-accent))}
-.result-graph .is-current.graph-node,.result-graph .graph-node:focus-visible{stroke:var(--graph-accent);stroke-width:6;stroke-opacity:.25;fill:var(--graph-accent);fill-opacity:1}
-.result-graph .is-muted{opacity:.28;cursor:default}.result-graph .graph-edge.is-muted{opacity:.4}
-.result-graph .graph-flow{fill:none;stroke:var(--graph-accent);stroke-width:1.7;stroke-dasharray:3 21;vector-effect:non-scaling-stroke;pointer-events:none;filter:drop-shadow(0 0 2px var(--graph-accent));opacity:0;transition:opacity .18s}
+.result-graph .graph-edge.is-hot .graph-edge-line,.result-graph .graph-edge:not(.is-muted):focus-visible .graph-edge-line{stroke:var(--graph-accent);stroke-opacity:1;marker-end:var(--graph-arrow-active);filter:drop-shadow(0 0 calc(var(--graph-pixel,1px)*3) var(--graph-accent))}
+.result-graph .graph-node:not(.is-muted).is-hot,.result-graph .graph-node:not(.is-muted):focus-visible{r:calc(var(--graph-dot-radius,3.6px)*1.25);filter:drop-shadow(0 0 calc(var(--graph-pixel,1px)*3) var(--graph-accent)) drop-shadow(0 0 calc(var(--graph-pixel,1px)*7) var(--graph-accent))}
+.result-graph .graph-node:not(.is-muted).is-current{r:calc(var(--graph-dot-radius,3.6px)*1.4);filter:drop-shadow(0 0 calc(var(--graph-pixel,1px)*3) var(--graph-accent)) drop-shadow(0 0 calc(var(--graph-pixel,1px)*8) var(--graph-accent));animation:result-graph-select .28s cubic-bezier(.2,.8,.2,1)}
+.result-graph .graph-node:not(.is-muted):active{r:calc(var(--graph-dot-radius,3.6px)*.8);transition-duration:.06s}
+.result-graph .is-muted{opacity:.5;cursor:default}.result-graph .graph-node.is-muted{fill:var(--graph-muted)}
+.result-graph .graph-edge.is-muted .graph-edge-line{stroke:var(--graph-muted);marker-end:var(--graph-arrow-muted)}
+.result-graph .graph-flow{fill:none;stroke:var(--graph-accent);stroke-width:1.7;stroke-dasharray:3 21;vector-effect:non-scaling-stroke;pointer-events:none;filter:drop-shadow(0 0 calc(var(--graph-pixel,1px)*2) var(--graph-accent));opacity:0;transition:opacity .18s}
 .result-graph .graph-flow.is-active{opacity:.25;animation:result-graph-flow 1.8s linear infinite}.result-graph .graph-hover-flow.is-active{opacity:.55}
 @keyframes result-graph-flow{to{stroke-dashoffset:-24}}
+@keyframes result-graph-select{0%{r:calc(var(--graph-dot-radius,3.6px)*.8)}45%{r:calc(var(--graph-dot-radius,3.6px)*1.7)}100%{r:calc(var(--graph-dot-radius,3.6px)*1.4)}}
 .result-graph-tooltip{position:absolute;z-index:4;pointer-events:none;max-width:min(340px,calc(100% - 16px));max-height:calc(100% - 16px);overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 system-ui,sans-serif;color:var(--color-text-primary,CanvasText);background:var(--color-background-primary,Canvas);border:1px solid var(--color-border-secondary,#8886);border-radius:6px;padding:7px 9px;box-shadow:0 3px 14px #0003}
-.result-graph-tooltip[hidden]{display:none}@media(prefers-reduced-motion:reduce){.result-graph .graph-node,.result-graph .graph-edge-line,.result-graph .graph-flow{transition:none}.result-graph .graph-flow.is-active{animation:none;stroke-dasharray:none}}`;
+.result-graph-tooltip[hidden]{display:none}@media(prefers-reduced-motion:reduce){.result-graph .graph-node,.result-graph .graph-edge-line,.result-graph .graph-flow{transition:none}.result-graph .graph-node:not(.is-muted).is-current{animation:none}.result-graph .graph-flow.is-active{animation:none;stroke-dasharray:none}}`;
 
 export class ResultGraph {
   private svg = svg('svg', { role: 'group', tabindex: '0', 'aria-label': '保存結果の初期値参照グラフ。ドラッグで移動、ホイールで拡大縮小。' });
@@ -174,7 +176,7 @@ export class ResultGraph {
     const style = document.createElement('style'); style.textContent = styles;
     this.pathFlow.classList.add('graph-flow'); this.hoverFlow.classList.add('graph-flow', 'graph-hover-flow');
     const definitions = svg('defs'), prefix = `result-graph-${++nextGraphID}`;
-    for (const suffix of ['arrow', 'arrow-active']) {
+    for (const suffix of ['arrow', 'arrow-active', 'arrow-muted']) {
       const marker = svg('marker', { id: `${prefix}-${suffix}`, viewBox: '0 0 10 10', orient: 'auto', markerUnits: 'userSpaceOnUse', refY: '5' });
       const shape = svg('path', { d: 'M0 1L10 5L0 9Z' }); shape.classList.add(`graph-${suffix}`); marker.append(shape); definitions.append(marker); this.arrows.push(marker);
       this.svg.style.setProperty(`--graph-${suffix}`, `url(#${prefix}-${suffix})`);
@@ -187,6 +189,12 @@ export class ResultGraph {
       this.drag = { pointer: event.pointerId, x: event.clientX, y: event.clientY, moved: false }; this.suppressClick = false;
     });
     this.svg.addEventListener('pointermove', event => {
+      if (!this.drag?.moved) {
+        const view = this.pointerNode(event);
+        if (view && this.hotNode !== view.data.id) this.hoverNode(view, event);
+        else if (view) this.positionTooltip(event.clientX, event.clientY);
+        else if (this.hotNode) this.clearHover();
+      }
       const drag = this.drag; if (!drag || drag.pointer !== event.pointerId) return;
       const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
       if (!drag.moved && Math.hypot(dx, dy) < 4) return;
@@ -240,14 +248,11 @@ export class ResultGraph {
       }
       for (const node of graph.nodes) {
         const point = this.positions.get(node.id)!;
-        const dot = svg('circle', { cx: point.x, cy: point.y, r: 3.6, role: 'button', tabindex: '-1' }); dot.classList.add('graph-node');
+        const dot = svg('circle', { cx: point.x, cy: point.y, r: 3.6, role: 'button', tabindex: '-1', 'data-node-id': node.id }); dot.classList.add('graph-node');
         const view = { data: node, dot }; this.nodes.set(node.id, view); nodeLayer.append(dot); this.describeNode(view);
-        dot.addEventListener('pointerenter', event => { if (!this.drag?.moved) this.hoverNode(view, event); });
-        dot.addEventListener('pointermove', event => { if (this.hotNode === view.data.id) this.positionTooltip(event.clientX, event.clientY); });
-        dot.addEventListener('pointerleave', () => { if (this.hotNode === view.data.id) this.clearHover(); });
         dot.addEventListener('focus', () => { if (view.data.matched) this.hoverNode(view); });
         dot.addEventListener('blur', () => this.clearHover());
-        dot.addEventListener('click', () => { if (!this.suppressClick && view.data.matched) this.callbacks.onNode(view.data); });
+        dot.addEventListener('click', event => { const nearest = this.pointerNode(event) ?? view; if (!this.suppressClick && nearest.data.matched) this.callbacks.onNode(nearest.data); });
         dot.addEventListener('keydown', event => this.navigate(event, view));
       }
       this.stage.replaceChildren(edgeLayer, this.pathFlow, this.hoverFlow, nodeLayer); this.fitted = false;
@@ -298,6 +303,7 @@ export class ResultGraph {
     const { x, y, scale } = this.camera; const width = this.width / scale, height = this.height / scale;
     this.svg.setAttribute('viewBox', `${x - width / 2} ${y - height / 2} ${width} ${height}`);
     this.svg.style.setProperty('--graph-dot-radius', `${3.6 / scale}px`);
+    this.svg.style.setProperty('--graph-pixel', `${1 / scale}px`);
     for (const arrow of this.arrows) {
       arrow.setAttribute('markerWidth', String(6 / scale)); arrow.setAttribute('markerHeight', String(6 / scale));
       arrow.setAttribute('refX', '18.5');
@@ -317,6 +323,20 @@ export class ResultGraph {
       this.hotEdge.group.classList.remove('is-hot'); this.nodes.get(this.hotEdge.data.source)?.dot.classList.remove('is-hot'); this.nodes.get(this.hotEdge.data.target)?.dot.classList.remove('is-hot');
     }
     this.hotNode = undefined; this.hotEdge = undefined; this.tooltip.hidden = true; this.hoverFlow.classList.remove('is-active');
+  }
+  private pointerNode(event: MouseEvent) {
+    if (!this.nodes.has((event.target as Element).getAttribute('data-node-id') ?? '')) return;
+    const rect = this.svg.getBoundingClientRect(), scale = this.camera.scale;
+    const x = this.camera.x + (event.clientX - rect.left - this.width / 2) / scale;
+    const y = this.camera.y + (event.clientY - rect.top - this.height / 2) / scale;
+    let closest: NodeView | undefined, distance = Infinity;
+    for (const element of document.elementsFromPoint(event.clientX, event.clientY)) {
+      const view = this.nodes.get(element.getAttribute('data-node-id') ?? '');
+      if (!view || view.dot !== element) continue;
+      const point = this.positions.get(view.data.id)!, next = Math.hypot(point.x - x, point.y - y);
+      if (next < distance) { closest = view; distance = next; }
+    }
+    return closest;
   }
   private edgePath(edge: GraphEdge) { const source = this.positions.get(edge.source)!, target = this.positions.get(edge.target)!; return `M${source.x},${source.y}L${target.x},${target.y}`; }
   private hoverEdge(view: EdgeView) {
