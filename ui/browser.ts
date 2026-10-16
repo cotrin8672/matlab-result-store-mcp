@@ -2,6 +2,7 @@ import { App, applyDocumentTheme, applyHostStyleVariables } from '@modelcontextp
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import { queriesFor, type QueryDefinition, type QueryKind, type QueryValue, type Filter, type Candidate, type Domain } from '../queries.ts';
 import { queryFunction } from './query-function.ts';
+import { ResultGraph, type GraphNode, type GraphEdge, type GraphData } from './graph.ts';
 import { themedPlotLayout, themedPlotData, applyPlotUpdate, type Plot, type PlotAnnotation, type PlotAnnotations, type PlotState, type PlotUpdate } from '../plots.ts';
 import type { BrowserSelection, BrowserState } from '../browser.ts';
 
@@ -50,6 +51,8 @@ let browserStateUri = 'result-store://browser/state', browserPinsRevision = '';
 let conditions: Condition[] = [];
 let refScheme = '', refSchemes: RefScheme[] = [];
 let resultPath: ResultPath | undefined, pathIndex = -1;
+let pathAnchorRowId: string | undefined, graphSegmentIds: string[] | undefined;
+let resultView: 'table' | 'graph' = 'table', resultGraphData: GraphData | undefined, resultGraphSignature = '';
 const pinCards = new Map<string, PinCard>();
 let pinsRevision = '', pinsRequest = 0, pinQueue: Promise<unknown> = Promise.resolve();
 let loadingPlot: number | undefined;
@@ -70,6 +73,9 @@ const icons = {
   filter: '<path d="M3 5h18l-7 8v6l-4 2v-8Z"/>',
   previous: '<path d="m15 5-7 7 7 7"/>',
   next: '<path d="m9 5 7 7-7 7"/>',
+  zoomIn: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6m-3-3v6"/>',
+  zoomOut: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6M7 10h6"/>',
+  fit: '<path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/>',
 };
 function icon(name: keyof typeof icons) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -107,6 +113,78 @@ async function read<T>(uri: string): Promise<T> {
   return JSON.parse(content.text) as T;
 }
 function run(action: Promise<unknown>) { void action.catch(showError); }
+const resultGraph = new ResultGraph(element('result-graph'), {
+  onNode: node => run(selectGraphNode(node)), onEdge: edge => run(selectGraphEdge(edge)),
+});
+const resultIdentity = (scheme: string, rowId: string) => JSON.stringify([scheme, rowId]);
+function syncGraphSelection() {
+  const current = resultPath?.nodes[pathIndex] ?? selected;
+  resultGraph.setSelection((resultPath?.nodes ?? []).map(node => resultIdentity(node.scheme, node.row_id)),
+    current ? resultIdentity(current.scheme, current.row_id) : undefined);
+}
+function graphQuerySignature() {
+  return JSON.stringify([catalog.directory, currentScheme()?.id, currentScheme()?.count, refScheme, compile('Fixed'), compile('Parametric')]);
+}
+function resetResultGraph() {
+  resultGraphData = undefined; resultGraphSignature = ''; resultGraph.setData({ nodes: [], edges: [], total: 0, truncated: false }); element('graph-count').textContent = '';
+}
+async function refreshResultGraph(force = false) {
+  const signature = graphQuerySignature();
+  if (!force && resultGraphData && resultGraphSignature === signature) return false;
+  const graph = await call<GraphData>('get_result_graph', { scheme: currentScheme().id, ...(refScheme ? { ref_scheme: refScheme } : {}),
+    filters: compile('Fixed'), parameters: compile('Parametric') });
+  if (signature !== graphQuerySignature()) return false;
+  resultGraphData = graph; resultGraphSignature = signature; resultGraph.setData(graph); syncGraphSelection();
+  element('graph-count').textContent = `${graph.nodes.filter(node => node.matched).length} / ${graph.total}点 · ${graph.edges.filter(edge => edge.matched).length}本${graph.truncated ? '（一部表示）' : ''}`;
+  return true;
+}
+function graphSegment(edge: GraphEdge): string[] {
+  const edges = resultGraphData?.edges.filter(edge => edge.matched) ?? [];
+  const children = new Map<string, string[]>(), parents = new Map<string, string>();
+  for (const edge of edges) { const list = children.get(edge.source) ?? []; list.push(edge.target); children.set(edge.source, list); parents.set(edge.target, edge.source); }
+  const path = [edge.source], visited = new Set(path);
+  if (!visited.has(edge.target)) { path.push(edge.target); visited.add(edge.target); }
+  while ((children.get(path[0])?.length ?? 0) === 1) {
+    const parent = parents.get(path[0]); if (!parent || visited.has(parent)) break;
+    path.unshift(parent); visited.add(parent);
+    if ((children.get(parent)?.length ?? 0) !== 1) break;
+  }
+  while ((children.get(path.at(-1)!)?.length ?? 0) === 1) {
+    const child = children.get(path.at(-1)!)![0]; if (visited.has(child)) break;
+    path.push(child); visited.add(child);
+  }
+  return path;
+}
+function graphSegmentAt(node: GraphNode): string[] {
+  const edges = resultGraphData?.edges.filter(edge => edge.matched) ?? [];
+  const outgoing = edges.filter(edge => edge.source === node.id);
+  const incoming = edges.find(edge => edge.target === node.id);
+  return outgoing.length === 1 ? graphSegment(outgoing[0]) : incoming ? graphSegment(incoming) : [node.id];
+}
+async function selectGraphNode(node: GraphNode) {
+  if (node.matched) await selectRow(node.row_id, undefined, false, graphSegmentAt(node));
+}
+async function selectGraphEdge(edge: GraphEdge) {
+  if (!edge.matched) return;
+  const segment = graphSegment(edge), current = resultPath?.nodes[pathIndex];
+  const id = current && segment.includes(resultIdentity(current.scheme, current.row_id)) ? resultIdentity(current.scheme, current.row_id) : edge.source;
+  const node = resultGraphData?.nodes.find(node => node.id === id);
+  if (node?.matched) await selectRow(node.row_id, undefined, false, segment);
+}
+function resultVisibility() {
+  const hidden = element('main').classList.contains('table-hidden'), graph = resultView === 'graph';
+  element('results-panel').classList.toggle('graph-view', graph && !hidden);
+  element('table-wrap').hidden = element('pages').hidden = hidden || graph;
+  element('result-graph').hidden = element('graph-footer').hidden = hidden || !graph;
+  element('sort').hidden = element('direction').hidden = graph;
+  element('view-table').setAttribute('aria-pressed', String(!graph)); element('view-graph').setAttribute('aria-pressed', String(graph));
+  element('toggle-table').textContent = `${graph ? 'Graph' : 'Table'}を${hidden ? '表示' : '隠す'}`;
+  if (graph && !hidden) resultGraph.resize();
+}
+async function switchResultView(view: 'table' | 'graph') {
+  resultView = view; resultVisibility();
+  if (view === 'graph' && catalog?.schemes.length) await refreshResultGraph();
+}
 function currentScheme() { return catalog.schemes.find(s => s.id === schemeSelect.value)!; }
 function refKeys() { return (refSchemes.find(s => s.id === refScheme)?.keys ?? []).map(key => ({ ...key, name: `Ref.${key.name}` })); }
 function conditionKeys(c: Condition) { return c.key.name.startsWith('Ref.') ? refKeys() : currentScheme().keys; }
@@ -120,7 +198,11 @@ function button(text: string, action: () => void, label?: string) {
   if (label) b.setAttribute('aria-label', label); return b;
 }
 const valueId = (value: QueryValue) => JSON.stringify(value);
-function valueText(c: Condition, value: QueryValue) { return c.known.get(valueId(value))?.label ?? (value === null ? '<missing>' : String(value)); }
+function numericText(value: unknown, key: Key) {
+  return typeof value === 'number' && (key.class === 'double' || key.class === 'single')
+    ? String(Number(value.toPrecision(key.class === 'single' ? 7 : 12))) : String(value ?? '');
+}
+function valueText(c: Condition, value: QueryValue) { return c.known.get(valueId(value))?.label ?? (value === null ? '<missing>' : numericText(value, c.key)); }
 function currentText(c: Condition) {
   if (!c.total) return '候補なし';
   if (c.definition.op === 'in') return c.all ? `すべて${c.values.length ? `（${c.values.length}件を除外）` : ''}`
@@ -187,6 +269,7 @@ function configurePlots(preserve = false) {
 function changeScheme(id?: string) {
   if (id) schemeSelect.value = id;
   const scheme = currentScheme(); conditions = []; refScheme = ''; refSchemes = []; offset = 0; selectedRowId = undefined;
+  resetResultGraph();
   resetPath(true); pickerPopover.hidePopover(); configurePlots(); renderRefSchemes();
   element<HTMLSelectElement>('sort').replaceChildren(option('RowId', '保存順'), ...scheme.keys.map(k => option(k.name, k.name)));
   element('direction').textContent = '↑';
@@ -296,15 +379,17 @@ async function changed(c: Condition) {
 function numericInput(c: Condition, side: number) {
   const input = document.createElement('input'); input.type = 'number'; input.step = 'any';
   input.setAttribute('aria-label', `${c.key.name} ${c.definition.name}${c.definition.op === 'between' ? side ? ' 上限' : ' 下限' : ''}`);
-  const value = c.values[side], raw = c.known.get(valueId(value))?.raw ?? value; input.value = String(raw ?? '');
+  const value = c.values[side], raw = c.known.get(valueId(value))?.raw ?? value; input.value = numericText(raw, c.key);
+  let displayed = input.value;
   let timer: ReturnType<typeof setTimeout>;
   const apply = () => {
     clearTimeout(timer); if (!input.isConnected || !conditions.includes(c)) return;
+    if (input.value === displayed) return;
     if (!input.value || !Number.isFinite(Number(input.value))) { showError(`${c.key.name}には数値を入力してください。`); return; }
     const value = /^(u?int64)$/.test(c.key.class ?? '') ? input.value : Number(input.value);
     const current = c.known.get(valueId(c.values[side]))?.raw ?? c.values[side];
     if (String(current) === input.value) return;
-    c.values[side] = value; run(changed(c));
+    displayed = input.value; c.values[side] = value; run(changed(c));
   };
   input.oninput = () => { clearTimeout(timer); timer = setTimeout(apply, 200); };
   input.onchange = apply;
@@ -460,8 +545,9 @@ function renderTable(page: Page) {
 }
 const pathFilterIds = ['path-sequence-min', 'path-sequence-max', 'path-cycle-min', 'path-cycle-max'];
 function resetPath(clearFilters = false) {
-  resultPath = undefined; pathIndex = -1; element('path-panel').hidden = true;
+  resultPath = undefined; pathIndex = -1; pathAnchorRowId = undefined; graphSegmentIds = undefined; element('path-panel').hidden = true;
   if (clearFilters) pathFilterIds.forEach(id => { element<HTMLInputElement>(id).value = ''; });
+  syncGraphSelection();
 }
 function pathFilters() {
   const values = pathFilterIds.map(id => element<HTMLInputElement>(id).value.trim());
@@ -477,13 +563,15 @@ function pathFilters() {
     }
   });
   if (sequence.min !== undefined && sequence.max !== undefined && sequence.min > sequence.max) throw new Error('順序の下限が上限を超えています。');
+  const min = typeof cumulative.min === 'string' ? BigInt(cumulative.min) : cumulative.min, max = typeof cumulative.max === 'string' ? BigInt(cumulative.max) : cumulative.max;
+  if (min !== undefined && max !== undefined && min > max) throw new Error('累積cycleの下限が上限を超えています。');
   return { ...(Object.keys(sequence).length ? { sequence } : {}), ...(Object.keys(cumulative).length ? { cumulative_cycle: cumulative } : {}) };
 }
 function renderPath() {
   const path = resultPath; element('path-panel').hidden = !path;
-  if (!path) return;
+  if (!path) { syncGraphSelection(); return; }
   const node = path.nodes[pathIndex];
-  const terminal = element('path-terminal'); terminal.textContent = `終端 ${path.terminal.scheme} / RowId ${path.terminal.row_id}`;
+  const terminal = element('path-terminal'); terminal.textContent = graphSegmentIds ? '選択区間' : `終端 ${path.terminal.scheme} / RowId ${path.terminal.row_id}`;
   terminal.title = `${terminal.textContent} · 累積cycle ${path.total_cycle ?? '?'}`;
   pathSlider.max = String(Math.max(1, path.nodes.length - 1)); pathSlider.value = String(Math.max(0, pathIndex)); pathSlider.disabled = path.nodes.length < 2;
   element<HTMLButtonElement>('path-previous').disabled = pathIndex <= 0;
@@ -495,11 +583,14 @@ function renderPath() {
   pathSlider.setAttribute('aria-valuetext', `${label.textContent} ${position.textContent}`);
   const reasons = { complete: '', cycle: '初期値Refが循環しています。', broken_ref: '初期値Refの参照先が見つかりません。', unknown_initial: '初期値Refが不明です。', limit: 'Pathの取得上限に達しました。' };
   element('path-termination').textContent = reasons[path.termination.reason];
+  syncGraphSelection();
 }
 async function loadPath(rowId: string, token: number, preserve = false) {
-  const sequence = preserve ? resultPath?.nodes[pathIndex]?.sequence : undefined;
+  const previous = preserve ? resultPath?.nodes[pathIndex] : undefined;
   const oldScheme = plotScheme()?.id, oldName = plotSelect.selectedOptions[0]?.textContent;
-  const args = { scheme: currentScheme().id, row_id: rowId, limit: 1000, ...pathFilters() };
+  const segment = graphSegmentIds, filters = pathFilters();
+  const end = segment?.length ? resultGraphData?.nodes.find(node => node.id === segment.at(-1))?.row_id ?? rowId : rowId;
+  const args = { scheme: currentScheme().id, row_id: end, limit: 1000, ...(segment ? {} : filters) };
   const path = await call<ResultPath>('get_result_path', args);
   while (token === request && path.nodes.length < path.total) {
     const page = await call<ResultPath>('get_result_path', { ...args, offset: path.nodes.length });
@@ -507,8 +598,22 @@ async function loadPath(rowId: string, token: number, preserve = false) {
     path.nodes.push(...page.nodes);
   }
   if (token !== request) return;
-  resultPath = path;
-  pathIndex = sequence === undefined ? -1 : path.nodes.findIndex(node => node.sequence === sequence);
+  if (segment) {
+    const records = new Map(path.nodes.map(node => [resultIdentity(node.scheme, node.row_id), node]));
+    path.nodes = segment.flatMap(id => records.has(id) ? [records.get(id)!] : []).map((node, i) => ({ ...node, sequence: i + 1 }));
+    path.path_length = path.nodes.length;
+    const min = typeof filters.cumulative_cycle?.min === 'string' ? BigInt(filters.cumulative_cycle.min) : filters.cumulative_cycle?.min;
+    const max = typeof filters.cumulative_cycle?.max === 'string' ? BigInt(filters.cumulative_cycle.max) : filters.cumulative_cycle?.max;
+    path.nodes = path.nodes.filter(node => {
+      if (filters.sequence?.min !== undefined && node.sequence < filters.sequence.min || filters.sequence?.max !== undefined && node.sequence > filters.sequence.max) return false;
+      const cycle = typeof node.cumulative_cycle === 'string' ? BigInt(node.cumulative_cycle) : node.cumulative_cycle;
+      return min === undefined && max === undefined || cycle !== null && (min === undefined || cycle >= min) && (max === undefined || cycle <= max);
+    });
+    path.total = path.nodes.length;
+  }
+  resultPath = path; pathAnchorRowId = rowId;
+  const current = previous ? resultIdentity(previous.scheme, previous.row_id) : segment ? resultIdentity(currentScheme().id, rowId) : undefined;
+  pathIndex = current ? path.nodes.findIndex(node => resultIdentity(node.scheme, node.row_id) === current) : -1;
   if (pathIndex < 0) pathIndex = path.nodes.length - 1;
   configurePlots(oldScheme === plotScheme()?.id);
   const samePlot = plotScheme()?.plots?.find(plot => plot.name === oldName);
@@ -525,7 +630,7 @@ async function choosePath(index: number) {
 }
 async function filterPath() {
   if (!resultPath) return;
-  const row = resultPath.terminal.row_id, token = ++request;
+  const row = pathAnchorRowId ?? resultPath.terminal.row_id, token = ++request;
   plotBusy(token, true);
   try {
     await loadPath(row, token, true); if (token !== request) return;
@@ -540,14 +645,23 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
       selected_row_id: preferredRowId ?? selectedRowId, offset, limit: 25, sort_key: element<HTMLSelectElement>('sort').value, descending: element('direction').textContent === '↓' });
     if (token !== request) return;
     renderTable(page); element('matches').textContent = `${page.matched_total} / ${currentScheme().count}件`;
+    const graphChanged = resultView === 'graph' || resultGraphData ? await refreshResultGraph(refresh) : false;
+    if (token !== request) return;
     const target = preferredRowId ?? (page.selected_matches ? selectedRowId : page.matched_total === 1 ? page.first_match ?? undefined : undefined);
     if (!target) {
       selectedRowId = undefined; await clearPlot(); if (token !== request) return;
       note(page.matched_total > 1 ? `${page.matched_total}件該当しています。Queryで絞り込むか、表から表示する結果を選択してください。` : ''); highlight(); return;
     }
     selectedRowId = target; highlight();
-    const samePath = resultPath?.terminal.scheme === currentScheme().id && resultPath.terminal.row_id === target;
-    if (!samePath || force) await loadPath(target, token, samePath);
+    if (graphSegmentIds && graphChanged) {
+      const current = resultPath?.nodes[pathIndex];
+      const node = resultGraphData?.nodes.find(node => node.id === resultIdentity(current?.scheme ?? currentScheme().id, current?.row_id ?? target) && node.matched)
+        ?? resultGraphData?.nodes.find(node => node.row_id === target && node.matched);
+      const edge = node && resultGraphData?.edges.find(edge => edge.matched && (edge.source === node.id || edge.target === node.id) && graphSegmentIds!.includes(edge.source) && graphSegmentIds!.includes(edge.target));
+      graphSegmentIds = node ? edge ? graphSegment(edge) : graphSegmentAt(node) : undefined;
+    }
+    const samePath = !!resultPath && pathAnchorRowId === target;
+    if (!samePath || force || graphChanged && graphSegmentIds) await loadPath(target, token, samePath);
     if (token !== request) return;
     const node = resultPath?.nodes[pathIndex];
     if (!node) { await clearPlot(token, true); return; }
@@ -556,9 +670,10 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
     else note('');
   } finally { plotBusy(token, false); }
 }
-async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
+async function selectRow(rowId: string, reply?: CallToolResult, force = false, segment?: string[]) {
   const token = ++request;
   resetPath();
+  graphSegmentIds = segment;
   for (const c of conditions.filter(c => c.definition.mode === 'Parametric' && c.definition.op === 'eq')) {
     const result = await domain(c, { locate: [{ candidate: rowId }] }); if (token !== request) return;
     remember(c, result.locations); c.values = [{ candidate: rowId }];
@@ -573,6 +688,7 @@ async function clearPlot(token = request, keepPath = false) {
     if (!keepPath) resetPath();
     selected = undefined; renderedPlot = undefined; Plotly.purge(element('plot'));
     plotAnnotations = { revision: '', annotations: [] };
+    syncGraphSelection();
   });
   plotQueue = task.catch(() => {}); await task;
 }
@@ -703,6 +819,7 @@ async function setCatalog(updated: Catalog, token = request) {
   schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`)));
   schemeSelect.disabled = element<HTMLButtonElement>('add-query').disabled = element<HTMLButtonElement>('clear-query').disabled = !catalog.schemes.length;
   if (!catalog.schemes.length) {
+    resetResultGraph();
     conditions = []; refScheme = ''; refSchemes = []; selectedRowId = undefined; plotSelect.replaceChildren(); plotSelect.disabled = true;
     element('filters').replaceChildren(); element('ref-filters').replaceChildren(); element('ref-panel').hidden = true;
     element('parameters').replaceChildren(); element('head').replaceChildren(); element('rows').replaceChildren();
@@ -861,7 +978,12 @@ element('previous').onclick = () => { offset -= 25; run(evaluate(++request)); };
 element('next').onclick = () => { offset += 25; run(evaluate(++request)); };
 element<HTMLSelectElement>('sort').onchange = () => { offset = 0; run(evaluate(++request)); };
 element('direction').onclick = () => { element('direction').textContent = element('direction').textContent === '↑' ? '↓' : '↑'; offset = 0; run(evaluate(++request)); };
-element('toggle-table').onclick = () => { const hidden = element('main').classList.toggle('table-hidden'); element('table-wrap').hidden = hidden; element('pages').hidden = hidden; element('toggle-table').textContent = hidden ? 'Tableを表示' : 'Tableを隠す'; };
+element('toggle-table').onclick = () => { element('main').classList.toggle('table-hidden'); resultVisibility(); };
+element('view-table').onclick = () => run(switchResultView('table'));
+element('view-graph').onclick = () => run(switchResultView('graph'));
+element('graph-fit').onclick = () => resultGraph.fit();
+element('graph-zoom-in').onclick = () => resultGraph.zoom(1.25);
+element('graph-zoom-out').onclick = () => resultGraph.zoom(.8);
 addContextButton.onclick = () => run(addContext());
 pinButton.onclick = () => run(pinCurrent());
 copyButton.onclick = () => run(copyCurrentPlot());

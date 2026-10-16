@@ -48,6 +48,14 @@
 `sequence: {min, max}`と`cumulative_cycle: {min, max}`はその一本の経路だけを区間指定する。ページをまたいでも元のsequenceと累積値を保持する。1回の返却は最大1000点、経路の探索は最大10000点。`offset`・`limit`で後続を取得する。
 画面では選んだ結果を終端にした履歴スライダーを使い、祖先に移動しても終端のQuery・テーブルを保持する。モデルが図を表示する際は、取得したnodeのScheme・RowIdを`render_plot`へ渡す。
 
+## 参照グラフで探索する
+
+`get_result_graph({scheme, filters, parameters, ref_scheme})`は同じSchemeの結果を最大10000点まで返す。`nodes[].matched`は通常／Refの全Query条件への一致状態で、不一致のノードも残る。`edges`は保存された初期状態の`source`から発展先の`target`への有向辺で、両端が一致したときだけmatched。別Schemeや参照切れのRefはnodeのメタデータに残し、架空の点・辺を補わない。`truncated`がtrueなら一部表示である。
+
+画面の結果欄はTable／Graphを切り替えられる。点をクリックするとその結果をPlotし、線を選ぶとQuery後の有効な辺だけから枝分かれのない区間を求める。初期状態側から発展先を選んで辿れる。Queryで無効になった枝を、区間選択の分岐として数えない。Refスライダーは共通のQuery領域にあり、通常Queryを変えずに経路内の現在位置だけを動かす。循環はvisited集合で止め、累積cycleは保存情報だけを使う。
+
+ノードのTooltipとQuery候補・入力・テーブルは`key_labels`等の読みやすい数値表示を使う。精密な値は`keys`／候補の`value`を使い、表示ラベルから数値や配列を復元しない。
+
 比較する図は`pin_plot`に`directory`・`scheme`・`row_id`・`plot_index`を渡してピン留めできる。画面ではPlotヘッダーの「Pin」を使う。
 ページ下部のPinned Canvasに図が並び、別Scheme・別ディレクトリへ移っても残る。ピンは図・保存条件・その時点のAI注釈を固定したスナップショットで、元の結果の更新には追従しない。同じ保存payloadを再びピン留めしても重複しない。
 `list_pinned_plots`は一覧と図のresource URIを返し、`unpin_plot({pin_id: "..."})`は指定したピンだけを解除する。通常のPlotキャッシュと異なり、ピンは個人用設定と同じ場所の`pins/`に保存される。

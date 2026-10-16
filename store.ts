@@ -303,6 +303,27 @@ export class ResultStore {
       limit, offset, candidates: rows.map(candidate), locations };
   }
 
+  resultGraph(id: string, filters: Filter[] = [], parameters: Filter[] = [], refScheme?: string, limit = 10000) {
+    this.db.exec('BEGIN');
+    try {
+      const scheme = this.scheme(id), source = this.source(id, refScheme);
+      const { where, params } = this.predicates(source, [...filters, ...parameters]);
+      const total = Number(this.query(`SELECT COUNT(*) AS count FROM ${identifier(scheme.storage)}`)[0].count);
+      const matched = new Set(this.query(`SELECT t0.RowId FROM ${source.from} WHERE ${where}`, params).map(row => String(row.RowId)));
+      const nodes = this.query(`SELECT * FROM ${identifier(scheme.storage)} ORDER BY RowId LIMIT ?`, [limit]).map(row => ({
+        id: JSON.stringify([id, String(row.RowId)]), scheme: id, ...this.row(scheme, row), matched: matched.has(String(row.RowId)),
+      }));
+      const loaded = new Map(nodes.map(node => [node.id, node]));
+      const edges = nodes.flatMap(node => {
+        const ref = node.initial_ref;
+        if (ref?.scheme !== id) return [];
+        const parent = loaded.get(JSON.stringify([ref.scheme, ref.row_id]));
+        return parent ? [{ source: parent.id, target: node.id, matched: parent.matched && node.matched }] : [];
+      });
+      return { scheme: id, nodes, edges, total, truncated: nodes.length < total };
+    } finally { this.db.exec('ROLLBACK'); }
+  }
+
   resultPath(id: string, rowId: string, sequence?: { min?: number; max?: number }, cumulativeCycle?: PathRange, offset = 0, limit = 1000) {
     if (!/^[1-9]\d*$/.test(rowId) || BigInt(rowId) > 9223372036854775807n) throw new Error('row_id must be a positive SQLite RowId, supplied as a decimal string.');
     const minCycle = typeof cumulativeCycle?.min === 'string' ? BigInt(cumulativeCycle.min) : cumulativeCycle?.min;

@@ -48,12 +48,12 @@ export function createServer(root?: string): McpServer {
     const scope = browserScope(context);
     return scope ? `result-store://browser/${scope}/state` : 'result-store://browser/state';
   };
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.8' }, {
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.9' }, {
     cacheHints: { 'server/discover': { ttlMs: 300000, cacheScope: 'private' }, 'tools/list': { ttlMs: 300000, cacheScope: 'private' } },
   });
   const getJobs = (directory?: string) => matlabJobs(getStore(directory).root);
   JobEvents.register(server, directory => getJobs(directory).events);
-  const uiUri = 'ui://result-store/browser-v0.5.8.html';
+  const uiUri = 'ui://result-store/browser-v0.5.9.html';
   const pins = new PlotPins();
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const directory = z.string().min(1).refine(path.isAbsolute, 'directory must be an absolute path.').optional()
@@ -238,6 +238,12 @@ export function createServer(root?: string): McpServer {
       locate: z.array(queryValue).default([]), nearest: z.boolean().default(false),
     }), annotations,
   }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.candidates(a.scheme, a.key, a.filters, a.ordered, a.limit, a.offset, a.locate, a.nearest, a.ref_scheme) }); });
+
+  server.registerTool('get_result_graph', {
+    description: 'Read the saved-result graph for one Scheme without MATLAB or MAT payloads. Returns every saved row up to limit, including Query mismatches: each node matched flag applies all Fixed filters and Parametric conditions using the same normal/Ref Key semantics as search_results. Set ref_scheme for immediate initial-state Ref conditions. Edges point from a saved initial-state parent to its child only when both loaded rows belong to this Scheme; edge matched means both endpoints match. Cross-Scheme and missing references remain in node metadata without fabricated nodes or edges. total counts all Scheme rows, and truncated reports whether limit omitted any rows (maximum 10,000). Graph data and the full Query match mask use one read snapshot.',
+    inputSchema: z.object({ directory, scheme, ref_scheme: z.string().min(1).optional(), filters,
+      parameters: filters, limit: z.number().int().min(1).max(10000).default(10000) }), annotations,
+  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.resultGraph(a.scheme, a.filters, a.parameters, a.ref_scheme, a.limit) }); });
 
   const cycleBound = z.union([z.number().finite().min(0).max(Number.MAX_SAFE_INTEGER), z.string().regex(/^\d+$/)]);
   server.registerTool('get_result_path', {
