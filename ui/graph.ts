@@ -29,8 +29,8 @@ function hash(value: string) {
   return result >>> 0;
 }
 
-// A seeded spanning forest keeps neighboring results close. Local grid repulsion
-// is bounded to 12 samples per cell, so even coincident nodes cannot make it quadratic.
+// Springs keep linked nodes evenly spaced; grid repulsion separates nearby branches.
+// Sampling is bounded to 12 nodes per cell, so coincident nodes cannot make it quadratic.
 function layout(graph: GraphData): Map<string, Point> {
   const count = graph.nodes.length, indices = new Map(graph.nodes.map((node, i) => [node.id, i]));
   const neighbors = Array.from({ length: count }, () => [] as number[]), incoming = new Uint32Array(count);
@@ -57,19 +57,19 @@ function layout(graph: GraphData): Map<string, Point> {
         depth[child] = depth[parent] + 1;
         const bend = depth[child] <= 64 ? (hash(graph.nodes[child].id) / 4294967296 - .5) * .18 : .65 / Math.sqrt(depth[child] - 63);
         const angle = angles[parent] + (children.length > 6 ? i * 2.399963 : children.length > 1 ? spread * ((i + .5) / children.length - .5) : bend);
-        const length = children.length > 6 ? 36 + 14 * Math.sqrt(i + .5) : 36;
+        const length = children.length > 6 ? 48 + 14 * Math.sqrt(i + .5) : 48;
         angles[child] = angle; x[child] = x[parent] + Math.cos(angle) * length; y[child] = y[parent] + Math.sin(angle) * length;
       });
     }
   }
   const vx = new Float64Array(count), vy = new Float64Array(count), fx = new Float64Array(count), fy = new Float64Array(count);
-  const steps = count > 2000 ? 32 : 64, cellSize = 44;
+  const steps = count > 2000 ? 48 : 144, cellSize = 44;
   for (let step = 0; step < steps; step++) {
     fx.fill(0); fy.fill(0);
     for (const [source, target] of edges) {
       const dx = x[target] - x[source], dy = y[target] - y[source], distance = Math.hypot(dx, dy) || 1;
-      const rest = 36 + Math.max(0, Math.sqrt(Math.max(neighbors[source].length, neighbors[target].length)) - 2) * 9;
-      const force = (distance - rest) / distance * .09;
+      const rest = Math.max(48, Math.sqrt(Math.max(neighbors[source].length, neighbors[target].length)) * 9);
+      const force = (distance - rest) / distance * .2;
       fx[source] += dx * force; fy[source] += dy * force; fx[target] -= dx * force; fy[target] -= dy * force;
     }
     const cells = new Map<string, number[]>();
@@ -89,7 +89,7 @@ function layout(graph: GraphData): Map<string, Point> {
           let dx = x[i] - x[j], dy = y[i] - y[j], distance = Math.hypot(dx, dy);
           if (distance >= cellSize) continue;
           if (distance < .001) { const angle = ((i + 1) * (j + 1) % 997) * Math.PI * 2 / 997; dx = Math.cos(angle) * (i < j ? 1 : -1); dy = Math.sin(angle) * (i < j ? 1 : -1); distance = 1; }
-          const force = (cellSize - distance) / distance * .15;
+          const force = (cellSize - distance) / distance * .25;
           fx[i] += dx * force; fy[i] += dy * force;
         }
       }
@@ -102,7 +102,7 @@ function layout(graph: GraphData): Map<string, Point> {
     }
   }
   const isolated = components.filter(nodes => nodes.length === 1).flat();
-  isolated.forEach((node, i) => { const radius = 23 * Math.sqrt(i); x[node] = Math.cos(i * 2.399963) * radius; y[node] = Math.sin(i * 2.399963) * radius; });
+  isolated.forEach((node, i) => { const radius = 26 * Math.sqrt(i); x[node] = Math.cos(i * 2.399963) * radius; y[node] = Math.sin(i * 2.399963) * radius; });
   const groups = components.filter(nodes => nodes.length > 1); if (isolated.length) groups.push(isolated);
   const boxes = groups.map(nodes => {
     let cx = 0, cy = 0; for (const i of nodes) { cx += x[i]; cy += y[i]; } cx /= nodes.length; cy /= nodes.length;
