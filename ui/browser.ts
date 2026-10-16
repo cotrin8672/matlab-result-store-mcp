@@ -6,10 +6,15 @@ import { themedPlotLayout, themedPlotData, applyPlotUpdate, type Plot, type Plot
 import type { BrowserSelection, BrowserState } from '../browser.ts';
 
 type Key = { name: string; class: string | null; kind: QueryKind };
-type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots: { index: number; name: string }[] | null };
+type Scheme = { id: string; keys: Key[]; values: string[]; count: number; plots: { index: number; name: string }[] | null; ref_schemes?: string[] };
 type Catalog = { root: string; directory: string; schemes: Scheme[]; plot_catalog: string; browser_state_uri?: string };
-type Row = { row_id: string; keys: Record<string, unknown>; key_labels: Record<string, string> };
-type Page = { rows: Row[]; total: number; matched_total: number; first_match: string | null; selected_matches: boolean };
+type InitialRef = { scheme: string; row_id: string };
+type Row = { row_id: string; keys: Record<string, unknown>; key_labels: Record<string, string>; initial_ref?: InitialRef | null; initial_ref_status?: string };
+type Page = { rows: Row[]; columns?: Key[]; total: number; matched_total: number; first_match: string | null; selected_matches: boolean };
+type RefScheme = { id: string; keys: Key[]; available: boolean };
+type PathNode = Row & InitialRef & { sequence: number; cycle: number | string | null; cumulative_cycle: number | string | null };
+type ResultPath = { terminal: InitialRef; path_length: number; total: number; offset: number; limit: number; nodes: PathNode[];
+  termination: { reason: 'complete' | 'cycle' | 'broken_ref' | 'unknown_initial' | 'limit'; ref?: InitialRef }; total_cycle: number | string | null };
 type Artifact = Row & { directory: string; scheme: string; plot_index: number; plot_name: string; plotly_uri: string; annotations_uri: string; payload: string; revision?: string; browser_state_uri?: string };
 type Pin = Row & { id: string; directory: string; scheme: string; plot_index: number; plot_name: string; payload: string; revision: string; created_at: string; annotations: PlotAnnotation[]; plotly_uri: string };
 type Pins = { pins: Pin[]; revision: string };
@@ -31,6 +36,7 @@ const app = new App({ name: 'MatlabResults', version: '0.1.0' }, { availableDisp
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const schemeSelect = element<HTMLSelectElement>('scheme'), plotSelect = element<HTMLSelectElement>('plot-choice');
 const directoryInput = element<HTMLInputElement>('directory');
+const refSelect = element<HTMLSelectElement>('ref-scheme'), pathSlider = element<HTMLInputElement>('path-slider');
 const status = element('status'), addContextButton = element<HTMLButtonElement>('add-context'), pinButton = element<HTMLButtonElement>('pin-plot');
 const copyButton = element<HTMLButtonElement>('copy-plot'), plotThemeButton = element<HTMLButtonElement>('plot-theme');
 const pickerPopover = element('picker-popover');
@@ -42,6 +48,8 @@ let renderedPlot: PlotState | undefined, plotQueue: Promise<unknown> = Promise.r
 let plotAnnotations: PlotAnnotations = { revision: '', annotations: [] }, updatesPending = false, browserRevision = '', plotColors = '';
 let browserStateUri = 'result-store://browser/state', browserPinsRevision = '';
 let conditions: Condition[] = [];
+let refScheme = '', refSchemes: RefScheme[] = [];
+let resultPath: ResultPath | undefined, pathIndex = -1;
 const pinCards = new Map<string, PinCard>();
 let pinsRevision = '', pinsRequest = 0, pinQueue: Promise<unknown> = Promise.resolve();
 let loadingPlot: number | undefined;
@@ -58,6 +66,10 @@ const icons = {
   dark: '<path d="M20.5 13a8.5 8.5 0 0 1-9.5-9.5A8.5 8.5 0 1 0 20.5 13Z"/>',
   refresh: '<path d="M20 7v5h-5 M4 17v-5h5 M5.3 7a8 8 0 0 1 13-2L20 8 M4 16l1.7 3a8 8 0 0 0 13-2"/>',
   grip: '<path d="M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01" stroke-width="3"/>',
+  add: '<path d="M12 5v14M5 12h14"/>',
+  filter: '<path d="M3 5h18l-7 8v6l-4 2v-8Z"/>',
+  previous: '<path d="m15 5-7 7 7 7"/>',
+  next: '<path d="m9 5 7 7-7 7"/>',
 };
 function icon(name: keyof typeof icons) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -96,6 +108,12 @@ async function read<T>(uri: string): Promise<T> {
 }
 function run(action: Promise<unknown>) { void action.catch(showError); }
 function currentScheme() { return catalog.schemes.find(s => s.id === schemeSelect.value)!; }
+function refKeys() { return (refSchemes.find(s => s.id === refScheme)?.keys ?? []).map(key => ({ ...key, name: `Ref.${key.name}` })); }
+function conditionKeys(c: Condition) { return c.key.name.startsWith('Ref.') ? refKeys() : currentScheme().keys; }
+function plotScheme() {
+  if (!resultPath) return currentScheme();
+  const node = resultPath.nodes[pathIndex]; return node ? catalog.schemes.find(s => s.id === node.scheme) : undefined;
+}
 function option(value: string, text: string) { const o = document.createElement('option'); o.value = value; o.textContent = text; return o; }
 function button(text: string, action: () => void, label?: string) {
   const b = document.createElement('button'); b.type = 'button'; b.textContent = text; b.onclick = action;
@@ -119,7 +137,7 @@ function compile(mode: 'Fixed' | 'Parametric', exceptId = 0): Filter[] {
 }
 function ordered(c: Condition) { return ['between', 'gte', 'lte'].includes(c.definition.op); }
 async function domain(c: Condition, args: Record<string, unknown> = {}): Promise<Domain> {
-  return call('list_candidates', { scheme: currentScheme().id, key: c.key.name, filters: c.domainFilters, ordered: ordered(c), limit: 25, ...args });
+  return call('list_candidates', { scheme: currentScheme().id, ...(refScheme ? { ref_scheme: refScheme } : {}), key: c.key.name, filters: c.domainFilters, ordered: ordered(c), limit: 25, ...args });
 }
 function remember(c: Condition, candidates: (Candidate | null)[]) { candidates.forEach(v => { if (v) c.known.set(valueId(v.value), v); }); }
 async function candidateAt(c: Condition, index: number): Promise<Candidate> {
@@ -161,19 +179,20 @@ async function loadDomain(c: Condition, reset: boolean, token: number) {
 }
 
 function configurePlots(preserve = false) {
-  const scheme = currentScheme(), old = preserve ? plotSelect.value : '';
-  plotSelect.replaceChildren(...(scheme.plots ?? []).map(p => option(String(p.index), p.name)));
-  if (scheme.plots?.some(p => String(p.index) === old)) plotSelect.value = old;
-  plotSelect.disabled = !scheme.plots?.length;
+  const scheme = plotScheme(), old = preserve ? plotSelect.value : '';
+  plotSelect.replaceChildren(...(scheme?.plots ?? []).map(p => option(String(p.index), p.name)));
+  if (scheme?.plots?.some(p => String(p.index) === old)) plotSelect.value = old;
+  plotSelect.disabled = !scheme?.plots?.length;
 }
 function changeScheme(id?: string) {
   if (id) schemeSelect.value = id;
-  const scheme = currentScheme(); conditions = []; offset = 0; selectedRowId = undefined; pickerPopover.hidePopover(); configurePlots();
+  const scheme = currentScheme(); conditions = []; refScheme = ''; refSchemes = []; offset = 0; selectedRowId = undefined;
+  resetPath(true); pickerPopover.hidePopover(); configurePlots(); renderRefSchemes();
   element<HTMLSelectElement>('sort').replaceChildren(option('RowId', '保存順'), ...scheme.keys.map(k => option(k.name, k.name)));
   element('direction').textContent = '↑';
 }
-async function addCondition() {
-  const key = currentScheme()?.keys[0]; if (!key) return;
+async function addCondition(ref = false) {
+  const key = (ref ? refKeys() : currentScheme()?.keys)[0]; if (!key) return;
   const c: Condition = { id: ++nextId, key, definition: queriesFor(key.kind)[0], values: [], all: false, total: 0, domain: [], domainFilters: [], known: new Map(), positions: [0] };
   conditions.push(c); await refreshFixed(c.id);
 }
@@ -215,11 +234,11 @@ function swipeQuery(row: HTMLElement, c: Condition) {
 }
 function renderQueries() {
   pickerPopover.hidePopover();
-  element('filters').replaceChildren(...conditions.map(c => {
+  const rows = conditions.map(c => {
     const row = document.createElement('div'); row.className = 'query-row'; row.dataset.query = String(c.id);
     const key = document.createElement('select'); key.setAttribute('aria-label', `Query ${c.id} Key`);
-    key.append(...currentScheme().keys.map(k => option(k.name, k.name))); key.value = c.key.name;
-    key.onchange = () => run(changeCondition(c, currentScheme().keys.find(k => k.name === key.value)!, c.definition.name));
+    key.append(...conditionKeys(c).map(k => option(k.name, k.name.replace(/^Ref\./, '')))); key.value = c.key.name;
+    key.onchange = () => run(changeCondition(c, conditionKeys(c).find(k => k.name === key.value)!, c.definition.name));
     const query = queryFunction(c.definition, queriesFor(c.key.kind), name => run(changeCondition(c, c.key, name)), `Query ${c.id} 種類`);
     const grip = document.createElement('span'); grip.className = 'query-swipe'; grip.title = '左右にスワイプして削除'; grip.append(icon('grip'));
     const editor = document.createElement('div'); editor.className = 'query-editor';
@@ -229,8 +248,29 @@ function renderQueries() {
       const text = document.createElement('output'); text.className = 'current'; text.id = `current-${c.id}`; text.textContent = text.title = currentText(c); editor.append(text);
     }
     row.append(grip, key, query, editor); swipeQuery(row, c);
-    const item = document.createElement('div'); item.className = 'query-item'; item.append(row); return item;
+    const item = document.createElement('div'); item.className = 'query-item'; item.append(row); return { c, item };
+  });
+  element('filters').replaceChildren(...rows.filter(({ c }) => !c.key.name.startsWith('Ref.')).map(({ item }) => item));
+  element('ref-filters').replaceChildren(...rows.filter(({ c }) => c.key.name.startsWith('Ref.')).map(({ item }) => item));
+}
+function renderRefSchemes() {
+  refSelect.replaceChildren(option('', '指定なし'), ...refSchemes.map(s => {
+    const item = option(s.id, `${s.id}${s.available ? '' : '（利用不可）'}`); item.disabled = !s.available && s.id !== refScheme; return item;
   }));
+  refSelect.value = refScheme;
+  element('ref-panel').hidden = !currentScheme()?.ref_schemes?.length && !refSchemes.length && !refScheme;
+  element<HTMLButtonElement>('add-ref-query').disabled = !refScheme || !refKeys().length;
+}
+async function refreshRefSchemes(token: number) {
+  if (!currentScheme().ref_schemes?.length && !refScheme) { refSchemes = []; renderRefSchemes(); return; }
+  const previous = refSchemes.find(s => s.id === refScheme);
+  const reply = await call<{ schemes: RefScheme[] }>('list_ref_schemes', {
+    scheme: currentScheme().id, filters: compile('Fixed').filter(filter => !filter.key.startsWith('Ref.')),
+  });
+  if (token !== request) return;
+  refSchemes = reply.schemes;
+  if (previous && !refSchemes.some(s => s.id === previous.id)) refSchemes.push(previous);
+  renderRefSchemes();
 }
 function renderParameters() {
   const parameters = element('parameters');
@@ -386,15 +426,19 @@ async function refreshFixed(resetId?: number) {
   try {
     if (resetId) await loadDomain(conditions.find(c => c.id === resetId)!, true, token);
     for (const c of conditions) { if (token !== request) return; await loadDomain(c, false, token); }
+    await refreshRefSchemes(token);
     if (token !== request) return;
     renderQueries(); renderParameters(); await evaluate(token);
   } finally { plotBusy(token, false); }
 }
 function highlight() { document.querySelectorAll<HTMLTableRowElement>('#rows tr').forEach(tr => tr.setAttribute('aria-selected', String(tr.dataset.row === selectedRowId))); }
 function renderTable(page: Page) {
-  const scheme = currentScheme(), header = document.createElement('tr');
+  const columns = page.columns ?? currentScheme().keys, header = document.createElement('tr');
   const sort = element<HTMLSelectElement>('sort'), descending = element('direction').textContent === '↓';
-  for (const key of scheme.keys) {
+  const previousSort = sort.value;
+  sort.replaceChildren(option('RowId', '保存順'), ...columns.map(key => option(key.name, key.name)));
+  if (previousSort === 'RowId' || columns.some(key => key.name === previousSort)) sort.value = previousSort;
+  for (const key of columns) {
     const th = document.createElement('th'), active = sort.value === key.name;
     th.setAttribute('aria-sort', active ? descending ? 'descending' : 'ascending' : 'none');
     const label = `${key.name}を${active && !descending ? '降順' : '昇順'}に並べ替え`;
@@ -408,16 +452,91 @@ function renderTable(page: Page) {
   element('rows').replaceChildren(...page.rows.map(row => {
     const tr = document.createElement('tr'); tr.dataset.row = row.row_id; tr.tabIndex = 0; tr.setAttribute('aria-label', `結果${row.row_id}を表示`);
     tr.onclick = () => run(selectRow(row.row_id)); tr.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); run(selectRow(row.row_id)); } };
-    for (const key of scheme.keys) { const td = document.createElement('td'); td.textContent = row.key_labels[key.name]; tr.append(td); } return tr;
+    for (const key of columns) { const td = document.createElement('td'); td.textContent = row.key_labels[key.name] ?? ''; tr.append(td); } return tr;
   }));
   element('page').textContent = page.total ? `${offset + 1}–${Math.min(offset + 25, page.total)} / ${page.total}件` : '0件';
   element<HTMLButtonElement>('previous').disabled = offset === 0;
   element<HTMLButtonElement>('next').disabled = offset + 25 >= page.total; highlight();
 }
+const pathFilterIds = ['path-sequence-min', 'path-sequence-max', 'path-cycle-min', 'path-cycle-max'];
+function resetPath(clearFilters = false) {
+  resultPath = undefined; pathIndex = -1; element('path-panel').hidden = true;
+  if (clearFilters) pathFilterIds.forEach(id => { element<HTMLInputElement>(id).value = ''; });
+}
+function pathFilters() {
+  const values = pathFilterIds.map(id => element<HTMLInputElement>(id).value.trim());
+  const sequence: { min?: number; max?: number } = {}, cumulative: { min?: number | string; max?: number | string } = {};
+  values.forEach((value, i) => {
+    if (!value) return;
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < (i < 2 ? 1 : 0) || (i < 2 && !Number.isSafeInteger(number))) throw new Error('Pathの範囲条件を確認してください。');
+    if (i < 2) sequence[i ? 'max' : 'min'] = number;
+    else {
+      if (number > Number.MAX_SAFE_INTEGER && !/^\d+$/.test(value)) throw new Error('大きな累積cycleは整数の十進表記で入力してください。');
+      cumulative[i === 3 ? 'max' : 'min'] = number > Number.MAX_SAFE_INTEGER ? value : number;
+    }
+  });
+  if (sequence.min !== undefined && sequence.max !== undefined && sequence.min > sequence.max) throw new Error('順序の下限が上限を超えています。');
+  return { ...(Object.keys(sequence).length ? { sequence } : {}), ...(Object.keys(cumulative).length ? { cumulative_cycle: cumulative } : {}) };
+}
+function renderPath() {
+  const path = resultPath; element('path-panel').hidden = !path;
+  if (!path) return;
+  const node = path.nodes[pathIndex];
+  const terminal = element('path-terminal'); terminal.textContent = `終端 ${path.terminal.scheme} / RowId ${path.terminal.row_id}`;
+  terminal.title = `${terminal.textContent} · 累積cycle ${path.total_cycle ?? '?'}`;
+  pathSlider.max = String(Math.max(1, path.nodes.length - 1)); pathSlider.value = String(Math.max(0, pathIndex)); pathSlider.disabled = path.nodes.length < 2;
+  element<HTMLButtonElement>('path-previous').disabled = pathIndex <= 0;
+  element<HTMLButtonElement>('path-next').disabled = pathIndex < 0 || pathIndex >= path.nodes.length - 1;
+  const label = element('path-node'), position = element('path-position');
+  label.textContent = node ? `${node.scheme} / RowId ${node.row_id}` : '該当なし'; label.title = node ? JSON.stringify(node.key_labels) : '';
+  position.textContent = node ? `${node.sequence} / ${path.path_length} · Σcycle ${node.cumulative_cycle ?? '?'}` : `0 / ${path.path_length}`;
+  position.title = node ? `cycle ${node.cycle ?? '?'} · ${path.total}件該当` : '';
+  pathSlider.setAttribute('aria-valuetext', `${label.textContent} ${position.textContent}`);
+  const reasons = { complete: '', cycle: '初期値Refが循環しています。', broken_ref: '初期値Refの参照先が見つかりません。', unknown_initial: '初期値Refが不明です。', limit: 'Pathの取得上限に達しました。' };
+  element('path-termination').textContent = reasons[path.termination.reason];
+}
+async function loadPath(rowId: string, token: number, preserve = false) {
+  const sequence = preserve ? resultPath?.nodes[pathIndex]?.sequence : undefined;
+  const oldScheme = plotScheme()?.id, oldName = plotSelect.selectedOptions[0]?.textContent;
+  const args = { scheme: currentScheme().id, row_id: rowId, limit: 1000, ...pathFilters() };
+  const path = await call<ResultPath>('get_result_path', args);
+  while (token === request && path.nodes.length < path.total) {
+    const page = await call<ResultPath>('get_result_path', { ...args, offset: path.nodes.length });
+    if (!page.nodes.length) break;
+    path.nodes.push(...page.nodes);
+  }
+  if (token !== request) return;
+  resultPath = path;
+  pathIndex = sequence === undefined ? -1 : path.nodes.findIndex(node => node.sequence === sequence);
+  if (pathIndex < 0) pathIndex = path.nodes.length - 1;
+  configurePlots(oldScheme === plotScheme()?.id);
+  const samePlot = plotScheme()?.plots?.find(plot => plot.name === oldName);
+  if (samePlot) plotSelect.value = String(samePlot.index);
+  renderPath();
+}
+async function choosePath(index: number) {
+  const node = resultPath?.nodes[index]; if (!node) return;
+  const oldName = plotSelect.selectedOptions[0]?.textContent;
+  pathIndex = index; configurePlots();
+  const samePlot = plotScheme()?.plots?.find(plot => plot.name === oldName);
+  if (samePlot) plotSelect.value = String(samePlot.index);
+  renderPath(); await loadSelection(node.row_id, ++request);
+}
+async function filterPath() {
+  if (!resultPath) return;
+  const row = resultPath.terminal.row_id, token = ++request;
+  plotBusy(token, true);
+  try {
+    await loadPath(row, token, true); if (token !== request) return;
+    const node = resultPath?.nodes[pathIndex];
+    if (node) await loadSelection(node.row_id, token); else await clearPlot(token, true);
+  } finally { plotBusy(token, false); }
+}
 async function evaluate(token: number, preferredRowId?: string, reply?: CallToolResult, force = false, refresh = false) {
   plotBusy(token, true);
   try {
-    const page = await call<Page>('search_results', { scheme: currentScheme().id, filters: compile('Fixed'), parameters: compile('Parametric'),
+    const page = await call<Page>('search_results', { scheme: currentScheme().id, ...(refScheme ? { ref_scheme: refScheme } : {}), filters: compile('Fixed'), parameters: compile('Parametric'),
       selected_row_id: preferredRowId ?? selectedRowId, offset, limit: 25, sort_key: element<HTMLSelectElement>('sort').value, descending: element('direction').textContent === '↓' });
     if (token !== request) return;
     renderTable(page); element('matches').textContent = `${page.matched_total} / ${currentScheme().count}件`;
@@ -427,12 +546,19 @@ async function evaluate(token: number, preferredRowId?: string, reply?: CallTool
       note(page.matched_total > 1 ? `${page.matched_total}件該当しています。Queryで絞り込むか、表から表示する結果を選択してください。` : ''); highlight(); return;
     }
     selectedRowId = target; highlight();
-    if (force || !selected || selected.directory !== catalog.directory || selected.row_id !== target || selected.scheme !== currentScheme().id || selected.plot_index !== Number(plotSelect.value)) await loadSelection(target, token, reply, refresh);
+    const samePath = resultPath?.terminal.scheme === currentScheme().id && resultPath.terminal.row_id === target;
+    if (!samePath || force) await loadPath(target, token, samePath);
+    if (token !== request) return;
+    const node = resultPath?.nodes[pathIndex];
+    if (!node) { await clearPlot(token, true); return; }
+    if (force || !selected || selected.directory !== catalog.directory || selected.row_id !== node.row_id || selected.scheme !== node.scheme || selected.plot_index !== Number(plotSelect.value))
+      await loadSelection(node.row_id, token, node.scheme === currentScheme().id && node.row_id === target ? reply : undefined, refresh);
     else note('');
   } finally { plotBusy(token, false); }
 }
 async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
   const token = ++request;
+  resetPath();
   for (const c of conditions.filter(c => c.definition.mode === 'Parametric' && c.definition.op === 'eq')) {
     const result = await domain(c, { locate: [{ candidate: rowId }] }); if (token !== request) return;
     remember(c, result.locations); c.values = [{ candidate: rowId }];
@@ -440,10 +566,11 @@ async function selectRow(rowId: string, reply?: CallToolResult, force = false) {
   }
   renderQueries(); renderParameters(); await evaluate(token, rowId, reply, force);
 }
-async function clearPlot(token = request) {
+async function clearPlot(token = request, keepPath = false) {
   pinButton.disabled = addContextButton.disabled = copyButton.disabled = true;
   const task = plotQueue.then(() => {
     if (token !== request) return;
+    if (!keepPath) resetPath();
     selected = undefined; renderedPlot = undefined; Plotly.purge(element('plot'));
     plotAnnotations = { revision: '', annotations: [] };
   });
@@ -451,18 +578,18 @@ async function clearPlot(token = request) {
 }
 async function loadSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   pinButton.disabled = addContextButton.disabled = copyButton.disabled = true;
-  if (!currentScheme().plots?.length) { await clearPlot(token); if (token === request) note('登録済みPlotがありません。'); return; }
+  if (!plotScheme()?.plots?.length) { await clearPlot(token, true); if (token === request) note('このPathの結果には登録済みPlotがありません。'); return; }
   plotBusy(token, true);
   const task = plotQueue.then(() => token === request ? drawSelection(rowId, token, reply, refresh) : undefined);
   plotQueue = task.catch(() => {});
   try { await task; }
-  catch (error) { if (token !== request) return; await clearPlot(); throw error; }
+  catch (error) { if (token !== request) return; await clearPlot(token, true); throw error; }
   finally { plotBusy(token, false); }
 }
 async function drawSelection(rowId: string, token: number, reply?: CallToolResult, refresh = false) {
   if (token !== request) return;
   note('');
-  const args = { directory: catalog.directory, scheme: currentScheme().id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
+  const args = { directory: catalog.directory, scheme: plotScheme()!.id, row_id: rowId, plot_index: Number(plotSelect.value || 1) };
   const response = reply?._meta?.plot_update ? reply : await app.callServerTool({ name: 'render_plot', arguments: { ...args, include_preview: false, known_revision: renderedPlot?.revision, refresh },
     _meta: { 'matlab-results/browser': true } });
   const artifact = data<Artifact>(response);
@@ -576,8 +703,9 @@ async function setCatalog(updated: Catalog, token = request) {
   schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`)));
   schemeSelect.disabled = element<HTMLButtonElement>('add-query').disabled = element<HTMLButtonElement>('clear-query').disabled = !catalog.schemes.length;
   if (!catalog.schemes.length) {
-    conditions = []; selectedRowId = undefined; plotSelect.replaceChildren(); plotSelect.disabled = true;
-    element('filters').replaceChildren(); element('parameters').replaceChildren(); element('head').replaceChildren(); element('rows').replaceChildren();
+    conditions = []; refScheme = ''; refSchemes = []; selectedRowId = undefined; plotSelect.replaceChildren(); plotSelect.disabled = true;
+    element('filters').replaceChildren(); element('ref-filters').replaceChildren(); element('ref-panel').hidden = true;
+    element('parameters').replaceChildren(); element('head').replaceChildren(); element('rows').replaceChildren();
     element('matches').textContent = element('page').textContent = '';
     element<HTMLButtonElement>('previous').disabled = element<HTMLButtonElement>('next').disabled = true;
     await clearPlot(token); note('登録済みのSchemeがありません。'); return;
@@ -666,7 +794,35 @@ async function accept(reply: CallToolResult) {
 }
 
 element('add-query').onclick = () => run(addCondition());
-element('clear-query').onclick = () => { conditions = []; run(refreshFixed()); };
+element('add-ref-query').onclick = () => run(addCondition(true));
+refSelect.onchange = () => {
+  refScheme = refSelect.value; conditions = conditions.filter(c => !c.key.name.startsWith('Ref.'));
+  const sort = element<HTMLSelectElement>('sort'); if (sort.value.startsWith('Ref.')) sort.value = 'RowId';
+  renderRefSchemes(); run(refreshFixed());
+};
+element('clear-query').onclick = () => {
+  conditions = []; refScheme = ''; renderRefSchemes();
+  const sort = element<HTMLSelectElement>('sort'); if (sort.value.startsWith('Ref.')) sort.value = 'RowId';
+  run(refreshFixed());
+};
+element('path-previous').onclick = () => run(choosePath(pathIndex - 1));
+element('path-next').onclick = () => run(choosePath(pathIndex + 1));
+element('path-bounds').onclick = () => {
+  const filters = element('path-filters'); filters.hidden = !filters.hidden;
+  element('path-bounds').setAttribute('aria-expanded', String(!filters.hidden));
+};
+let pathTimer: ReturnType<typeof setTimeout>;
+const applyPathIndex = () => { clearTimeout(pathTimer); run(choosePath(Number(pathSlider.value))); };
+pathSlider.oninput = () => { clearTimeout(pathTimer); pathTimer = setTimeout(applyPathIndex, 100); };
+pathSlider.onchange = applyPathIndex;
+let pathBoundsTimer: ReturnType<typeof setTimeout>;
+const applyPathFilters = () => { clearTimeout(pathBoundsTimer); run(filterPath()); };
+pathFilterIds.forEach(id => {
+  const input = element<HTMLInputElement>(id);
+  input.oninput = () => { clearTimeout(pathBoundsTimer); pathBoundsTimer = setTimeout(applyPathFilters, 200); };
+  input.onchange = applyPathFilters;
+  input.onkeydown = event => { if (event.key === 'Enter') applyPathFilters(); };
+});
 let directoryTimer: ReturnType<typeof setTimeout>, pendingDirectory = '';
 function applyDirectory() {
   clearTimeout(directoryTimer);
@@ -693,8 +849,9 @@ element('refresh').onclick = () => run((async () => {
   const old = currentScheme()?.id; catalog = updated; directoryInput.value = updated.directory; useBrowserState(updated.browser_state_uri);
   if (catalog.schemes.some(s => s.id === old)) {
     schemeSelect.replaceChildren(...catalog.schemes.map(s => option(s.id, `${s.id} (${s.count})`))); schemeSelect.value = old; configurePlots(true);
-    conditions = conditions.filter(c => currentScheme().keys.some(k => k.name === c.key.name));
-    conditions.forEach(c => { c.key = currentScheme().keys.find(k => k.name === c.key.name)!; });
+    const keys = [...currentScheme().keys, ...refKeys()];
+    conditions = conditions.filter(c => keys.some(k => k.name === c.key.name));
+    conditions.forEach(c => { c.key = keys.find(k => k.name === c.key.name)!; });
     const pending = refreshFixed(), refreshToken = request;
     await pending; if (refreshToken === request && selectedRowId) await evaluate(++request, selectedRowId, undefined, true, true);
   }

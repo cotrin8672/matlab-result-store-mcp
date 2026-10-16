@@ -48,12 +48,12 @@ export function createServer(root?: string): McpServer {
     const scope = browserScope(context);
     return scope ? `result-store://browser/${scope}/state` : 'result-store://browser/state';
   };
-  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.7' }, {
+  const server = new McpServer({ name: 'matlab-result-store', version: '0.5.8' }, {
     cacheHints: { 'server/discover': { ttlMs: 300000, cacheScope: 'private' }, 'tools/list': { ttlMs: 300000, cacheScope: 'private' } },
   });
   const getJobs = (directory?: string) => matlabJobs(getStore(directory).root);
   JobEvents.register(server, directory => getJobs(directory).events);
-  const uiUri = 'ui://result-store/browser-v0.5.4.html';
+  const uiUri = 'ui://result-store/browser-v0.5.8.html';
   const pins = new PlotPins();
   const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const directory = z.string().min(1).refine(path.isAbsolute, 'directory must be an absolute path.').optional()
@@ -211,9 +211,10 @@ export function createServer(root?: string): McpServer {
   }, async (a, context) => result({ ...await listSchemes(a.directory), browser_state_uri: browserUri(context) }));
 
   server.registerTool('search_results', {
-    description: 'Search saved results with AND conditions without loading MAT payloads. filters define the Fixed result table; optional parameters further restrict matched_total/first_match/selected_matches, as in the MATLAB GUI. Use list_candidates values for exact array Key comparisons. contains is case-sensitive. NULL means an unknown historical Key.',
+    description: 'Search saved results with AND conditions without loading MAT payloads. filters define the Fixed result table; optional parameters further restrict matched_total/first_match/selected_matches, as in the MATLAB GUI. Set ref_scheme to a target from list_ref_schemes and use Ref.<Key> for its immediate initial-state row. Selecting a Ref Scheme requires a matching existing referenced row even without child filters. columns describes both normal and Ref Keys. Use list_candidates values for exact array Key comparisons. contains is case-sensitive. NULL means an unknown historical Key.',
     inputSchema: z.object({
       directory, scheme,
+      ref_scheme: z.string().min(1).optional(),
       filters,
       parameters: filters.describe('Parametric conditions. These affect match statistics, while rows/total remain the Fixed table.'),
       selected_row_id: rowId.optional(),
@@ -221,16 +222,31 @@ export function createServer(root?: string): McpServer {
       offset: z.number().int().min(0).default(0),
       sort_key: z.string().default('RowId'), descending: z.boolean().default(false),
     }), annotations,
-  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.search(a.scheme, a.filters, a.limit, a.offset, a.sort_key, a.descending, a.parameters, a.selected_row_id) }); });
+  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.search(a.scheme, a.filters, a.limit, a.offset, a.sort_key, a.descending, a.parameters, a.selected_row_id, a.ref_scheme) }); });
+
+  server.registerTool('list_ref_schemes', {
+    description: 'List immediate initial-state Ref Scheme targets reachable after normal Fixed filters, with their Key metadata. Ref.* filters and the selected Ref target are deliberately ignored, matching MATLAB GUI target selection. available=false means saved references point to missing Scheme metadata or storage. Does not load MAT payloads or start MATLAB.',
+    inputSchema: z.object({ directory, scheme, filters }), annotations,
+  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.refSchemes(a.scheme, a.filters) }); });
 
   server.registerTool('list_candidates', {
-    description: 'Read paginated distinct saved Key values after Fixed filters, sorted as in the MATLAB GUI (NULL last). No MAT payloads are loaded. Pass each returned value object directly to search_results for exact scalar/array equality or membership. ordered excludes NULL for range controls. locate returns each requested value and its zero-based candidate index; nearest snaps missing numeric values to the closest saved value.',
+    description: 'Read paginated distinct saved Key values after Fixed filters, sorted as in the MATLAB GUI (NULL last). No MAT payloads are loaded. Set ref_scheme and use key Ref.<Key> for immediate initial-state Keys; the returned candidate still identifies the base result row. Pass each value object directly to search_results for exact scalar/array equality or membership. Exclude a Fixed condition itself when requesting its facet; Parametric domains use all Fixed filters. ordered excludes NULL for range controls. locate returns each requested value and its zero-based candidate index; nearest snaps missing numeric values to the closest saved value.',
     inputSchema: z.object({
       directory, scheme, key: z.string(), filters, ordered: z.boolean().default(false),
+      ref_scheme: z.string().min(1).optional(),
       limit: z.number().int().min(1).max(100).default(25), offset: z.number().int().min(0).default(0),
       locate: z.array(queryValue).default([]), nearest: z.boolean().default(false),
     }), annotations,
-  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.candidates(a.scheme, a.key, a.filters, a.ordered, a.limit, a.offset, a.locate, a.nearest) }); });
+  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.candidates(a.scheme, a.key, a.filters, a.ordered, a.limit, a.offset, a.locate, a.nearest, a.ref_scheme) }); });
+
+  const cycleBound = z.union([z.number().finite().min(0).max(Number.MAX_SAFE_INTEGER), z.string().regex(/^\d+$/)]);
+  server.registerTool('get_result_path', {
+    description: 'Follow only the selected terminal (Scheme, RowId) and its saved initial-state Refs, returning one chronological path for a saved-waveform slider. sequence is one-based; cycle is the saved per-result cycle Key and cumulative_cycle is its prefix sum from a confirmed no-Ref origin. Unknown history, cycles or dangling Refs leave cumulative cycles unknown; missing cycle Keys poison the sum from that node onward. Never infers iterations or joins rows by matching Keys. Optional inclusive sequence/cumulative_cycle bounds and pagination filter this path only. Large exact cycle totals are decimal strings. Walks at most 10,000 nodes in a read snapshot, without MATLAB or MAT payloads.',
+    inputSchema: z.object({ directory, scheme, row_id: rowId,
+      sequence: z.object({ min: z.number().int().min(1).optional(), max: z.number().int().min(1).optional() }).optional(),
+      cumulative_cycle: z.object({ min: cycleBound.optional(), max: cycleBound.optional() }).optional(),
+      offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(1000).default(1000) }), annotations,
+  }, async a => { const store = getStore(a.directory); return result({ directory: store.root, ...store.resultPath(a.scheme, a.row_id, a.sequence, a.cumulative_cycle, a.offset, a.limit) }); });
 
   server.registerTool('get_result', {
     description: 'Read one result and Value metadata from MATLAB v7.3/HDF5 without MATLAB. Arrays are returned only when named in include_values. Complex arrays have separate real/imag flat arrays, in MATLAB column-major order. Slice indices are ZERO-BASED in MATLAB dimension order; count is the number of elements per dimension. NaN/Inf and 64-bit integers are strings to preserve their meaning.',

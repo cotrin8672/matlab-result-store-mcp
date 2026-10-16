@@ -149,6 +149,10 @@ pnpm preview "path/to/project" 8732
 
 候補の複数選択は「すべて」と除外を扱い、候補が多い場合はページを移動できる。配列Keyも保存値を候補から選択できる。
 
+Queryの「初期値 RefQuery」で直接の参照先Schemeを選ぶと、その初期値行のKeyも子条件として絞り込める。子条件は`Ref.<Key>`として通常の条件とANDで組み合わせ、Fixed・Parametersと候補スライダーの動作は同じ。参照先を選ぶだけでも、そのSchemeの実在する初期値行を持つ結果に限定する。参照先の候補は通常のFixed条件から求め、子条件によって選択肢を消さない。
+
+Plot下の履歴スライダーは、選んだ結果を終端として保存済みの初期値Refを順番にたどる。古い保存波形から終端までの一直線の経路だけを表示し、同じKeyの別行・別の枝は混ぜない。終端のQueryとテーブルを保持したまま過去の波形へ移動でき、取得区間の順番・保存された`cycle`の累積値で区間を絞れる。参照なしが確認できた起点からだけ累積し、履歴不明・参照切れ・循環があれば累積値は不明と表示する。途中の`cycle`が欠けた場合も、その位置以降を推定しない。
+
 Plotヘッダーの「Pin」で現在の図をページ下部のPinned Canvasに保存する。別Scheme・別ディレクトリへ切り替えても残り、各図を独立して拡大・縮小できる。「解除」はピンだけを削除する。
 ピンは図のデータ・保存条件・AI注釈のスナップショットで、元の結果の再計算や注釈編集に追従しない。同じ保存payloadの再ピン留めは重複を作らない。個人用設定と同じ場所の`pins/`に保存し、アプリやPluginの再起動後も保持する。
 
@@ -164,8 +168,10 @@ Plotヘッダーの「Pin」で現在の図をページ下部のPinned Canvasに
 | `open_browser` | 明示的に閲覧画面を開く。既に開いている画面はそのまま使う |
 | `list_stores` | 任意のディレクトリ自身と直下の子フォルダから保存先を探す |
 | `list_schemes` | Scheme・Key・Value・登録済みPlot・件数を列挙する |
+| `list_ref_schemes` | 通常のFixed条件下で初期値Refの参照先Scheme・子Keyを取得する |
 | `search_results` | KeyのAND条件検索。Fixedの行一覧とParametricの一致件数・選択状態を返す |
 | `list_candidates` | Fixed条件下の保存済み候補をページ単位で取得。配列の一致や候補スライダーに使う |
+| `get_result_path` | 終端から保存された初期値Refをたどり、順番・cycle・累積cycle付きの一本の経路を取得する |
 | `get_result` | 1件の条件とValueメタデータ。明示した配列だけを取得する |
 | `render_plot` | 図を取得してMatlabResults画面にも表示する。連続した表示は同じUIセッションを使い、PNGは取得済みなら返す |
 | `annotate_plot` | 指定したPlotの点ラベル・縦線・横線を設定する。同じ閲覧画面に反映し、空配列でAI注釈を消す |
@@ -224,7 +230,7 @@ HTTPでのローカル接続は`node server.ts "path/to/project" --http 8732`。
 
 `.codex-plugin/plugin.json`とルートの`.mcp.json`、`skills/`が一つのPluginパッケージになる。
 CodexのMCP起動待ち時間を同梱するため、[公式に対応しているCodex形式](https://developers.openai.com/plugins/build/plugins)を使う。
-`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.5.4.html`を返し、図の取得と同時に閲覧画面へ表示する。
+`open_browser`にサイドバーと会話パネルのentrypointを宣言する。`render_plot`も同じ`ui://result-store/browser-v0.5.8.html`を返し、図の取得と同時に閲覧画面へ表示する。
 連続したモデルの表示要求には同じUIセッションIDを返す。通常の検索・配列取得では画面を開かない。UIのタブ再利用はホストの対応に依存する。
 モデルへの応答には描画配列を含めず、結果情報とresource URIを返す。UI自身がキャッシュから描画データを取得し、UIからの更新要求では差分送信を使う。大きなモデル応答でタブ再利用用メタデータが失われる問題を避ける。
 

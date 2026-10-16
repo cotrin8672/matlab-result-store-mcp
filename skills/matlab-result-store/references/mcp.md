@@ -20,6 +20,34 @@
    `preview_available: false`の場合はPNGを見たと主張しない。画像が必要なら`refresh: true`で取得する。
 5. 精密な数値が必要なときだけ、`get_result`の`include_values`に必要なValueを指定する。
 
+## 初期値Refで絞り込む
+
+`list_schemes`の各Schemeの`ref_schemes`は、保存された直接の初期値Refの参照先ID。
+`list_ref_schemes({scheme, filters})`は通常のFixed条件下の参照先と、そのKeyメタデータを返す。`Ref.*`条件は参照先一覧には影響しない。`available: false`の参照先は取得できない。
+
+`search_results`と`list_candidates`に`ref_scheme`を指定し、子Keyを`Ref.<Key>`で渡す。
+通常と子の条件は同じ`filters`・`parameters`に混ぜてANDで指定できる。参照先を選ぶだけでも、そのSchemeの実在する参照行を持つ結果に絞る。`search_results.columns`は通常・子の両方のKeyを含む。
+
+```json
+{
+  "scheme": "waveform",
+  "ref_scheme": "waveform",
+  "filters": [{ "key": "detuning_main", "op": "eq", "value": 6 }],
+  "parameters": [{ "key": "Ref.cycle", "op": "eq", "value": 5000 }]
+}
+```
+
+子Keyの`list_candidates`でも返された`value`をそのまま使う。candidateは検索対象の親RowIdを指し、参照先RowIdへ置き換えない。Fixedの候補を求めるときはその条件自身を除き、Parametersの候補は全Fixed条件だけから求める。参照先を変更するときは子条件を外し、通常の条件は保持する。
+
+## 一本の保存履歴をたどる
+
+`get_result_path({scheme, row_id})`は選んだ終端の初期値Refだけを再帰的にたどり、古い保存結果から終端の順で`nodes`を返す。行の同一性は`(Scheme, RowId)`で決まり、Keyが同じ別の枝を混ぜない。MATLAB・MAT配列を読み出さず、保存データも変更しない。
+
+各nodeの`sequence`は取得区間内の1始まりの順番、`cycle`はその行に保存された値、`cumulative_cycle`は参照なしと確認できた起点からの累積値。大きい整数は十進文字列で保持する。`termination.reason`は`complete`・`cycle`・`broken_ref`・`unknown_initial`・`limit`。起点が確定しない場合はすべての累積値がnullで、途中のcycle欠落ではその位置以降がnullになる。未保存の反復回数を補わない。
+
+`sequence: {min, max}`と`cumulative_cycle: {min, max}`はその一本の経路だけを区間指定する。ページをまたいでも元のsequenceと累積値を保持する。1回の返却は最大1000点、経路の探索は最大10000点。`offset`・`limit`で後続を取得する。
+画面では選んだ結果を終端にした履歴スライダーを使い、祖先に移動しても終端のQuery・テーブルを保持する。モデルが図を表示する際は、取得したnodeのScheme・RowIdを`render_plot`へ渡す。
+
 比較する図は`pin_plot`に`directory`・`scheme`・`row_id`・`plot_index`を渡してピン留めできる。画面ではPlotヘッダーの「Pin」を使う。
 ページ下部のPinned Canvasに図が並び、別Scheme・別ディレクトリへ移っても残る。ピンは図・保存条件・その時点のAI注釈を固定したスナップショットで、元の結果の更新には追従しない。同じ保存payloadを再びピン留めしても重複しない。
 `list_pinned_plots`は一覧と図のresource URIを返し、`unpin_plot({pin_id: "..."})`は指定したピンだけを解除する。通常のPlotキャッシュと異なり、ピンは個人用設定と同じ場所の`pins/`に保存される。
